@@ -39,6 +39,12 @@ Works on **vanilla Frappe** and optionally unlocks ERPNext-specific formula func
 - **PivotTable Builder** — 4 drop zones (Rows/Columns/Values/Filters), SUM/COUNT/AVG aggregation, subtotals; "Insert to Sheet" pushes pivot into a new blank sheet tab
 - **Conditional Formatting** — 4 rule types (Cell Value / Color Scale / Top-Bottom N / Duplicate-Unique); persisted per user
 - **1:N Child Table Tree View** — CT columns with multiple rows show `▶ N` expand badge in row header; click to expand individual child rows inline
+- **Focus Cell / Crosshair** — View tab toggle highlights the active row and column; color-customizable; persisted per user
+- **Hide / Unhide Rows** — Right-click to hide rows; Excel-style ▲/▼ click-to-unhide band indicator; hidden state saved in user_settings and workbook
+- **Repeat Last Action (F4)** — Replays the last formatting action (bold, align, fill, border, resize, number format) on the current selection
+- **Formula Precedent Highlighting** — Select a formula cell → all dependency cells get a green outline using HyperFormula's dependency graph
+- **Created / Updated Meta Column** — The 4 Frappe audit fields (owner, creation, modified_by, modified) are automatically grouped into one compact visual column with avatars, CR/MD badges, and dates
+- **Full Format Persistence** — All Home tab formatting, column widths, row heights, and hidden rows survive page refresh (user_settings) and are saved/restored via workbook "Save View"
 
 ---
 
@@ -177,7 +183,55 @@ bench build --app excel_view   # required after every pull (dist files are not c
 
 ## Release Notes
 
-### v2.6 — Mar 2026 (Current)
+### v3.1 — Mar 2026 (Current)
+
+**Grid Intelligence — Focus Cell, Hide Rows, Repeat Last Action, Precedents, Meta Column, Full Format Persistence**
+
+**Focus Cell / Crosshair (View tab)**
+- Horizontal + vertical highlight lines intersecting at the active cell
+- Toggle in View tab ("Focus Cell" button); color customizable via Pickr color swatch
+- 10% opacity tint on the row/column, 20% at the intersection cell
+- Setting persisted in `user_settings("excel_focus_cell")` — survives page refresh
+
+**Hide / Unhide Rows**
+- Right-click row header → "Hide Row(s)" — works on single or multi-row selection
+- HOT 6.2.2 has no `hiddenRows` plugin — implemented via `display:none` on TR elements using `afterRenderer`, `afterGetRowHeader`, and `afterRender` sync of left-clone TRs
+- Click-to-unhide indicators: ▲ button above and ▼ button below hidden blocks (green `#217346` band, Excel-style)
+- Hidden rows persisted in `user_settings("excel_hidden_rows")` AND encoded in workbook `format_store.__hidden_rows`
+- Hidden state loaded **before** `_init_hot()` so initial render never shows blank space
+
+**Repeat Last Action (F4)**
+- Records last formatting action automatically: bold, italic, underline, strikethrough, alignment, H-align, V-align, text color, fill color, borders, number format, column resize, row resize
+- F4 replays the action on the current selection
+- Uses HOT `beforeKeyDown` hook with `stopImmediatePropagation` (HOT intercepts F4 for formula cycling — `stopImmediatePropagation` is required, not just `preventDefault`)
+
+**Formula Precedent Highlighting**
+- Select any formula cell → all cells it depends on get a **green outline** (`2px solid #4caf50`)
+- Uses `HyperFormula.getCellDependencies()` — supports both single-cell and range dependencies
+- Clears automatically when a non-formula cell is selected
+- Toggle in View tab ("Show Precedents")
+
+**Created / Updated Meta Column**
+- When `owner`, `creation`, `modified_by`, `modified` fields are in the column selection, they are automatically grouped into one virtual "Created / Updated" column
+- Each row shows: avatar + CR badge + creation date (top row) and avatar + MD badge + last modified date (bottom row); full username in tooltip on hover
+- Column is read-only, 200px wide, excluded from DB saves; the 4 underlying fields remain in `list_view.fields` for the server query
+- Workbook save/load: stored as `{ fieldname: "_meta", is_meta_col: true }` marker; expanded back to the 4 audit fields on load + `_inject_meta_column()` re-runs automatically
+
+**Full Format Persistence (user_settings + Workbook)**
+- All Home tab formatting — bold, italic, underline, strikethrough, alignment, text color, fill color, borders, number formats — persisted in `user_settings("excel_format_store")`
+- Column widths: fixed for HOT 6.2.2 (uses `plugin.manualColumnWidths[]` array, not the broken `columnWidthsMap`)
+- Row heights: persisted in `user_settings("excel_row_heights")` as `manualRowHeights[]` array
+- Workbook "Save View" captures all of the above + hidden rows + row heights (encoded in `format_store.__hidden_rows` / `format_store.__row_heights` — no schema change needed)
+- Workbook deselect clears all workbook-specific keys from `user_settings` (`excel_hidden_rows`, `excel_row_heights`, `excel_columns`, `excel_format_store`, `excel_cf_rules`, etc.) so the view reverts to clean state
+
+**Bug Fixes**
+- Fixed `"Field not permitted in query: tabEmployee._meta"` — `VIRTUAL_KEYS` set in `apply_field_selection` filters out `_meta` and other virtual column keys before building `list_view.fields`
+- Fixed column width application in `apply_config` — now uses a `key→width` map matched against actual `board.columns` (index-based apply was wrong after meta column injection shifted indices)
+- Fixed workbook column widths in `get_config` — used broken `columnWidthsMap.get()` (undefined in HOT 6.2.2); now reads `plugin.manualColumnWidths[phys_i]` directly
+
+---
+
+### v2.6 — Mar 2026
 
 **Excel Ribbon Toolbar + Charts + PivotTable + Conditional Formatting + Tree View**
 
@@ -435,15 +489,26 @@ bench build --app excel_view   # required after every pull (dist files are not c
 
 ## Upcoming
 
-### v3.0+
+### v3.2 — Zero-LLM Intelligence
 
-- Cross-sheet formulas (`=Sheet2!A1` syntax)
-- `=QUERY(doctype, fields, filters)` — range-spilling formula that pulls any DocType data into a sheet (needs HyperFormula dynamic arrays)
-- Smart Autofill — RandomForest predicts values per field per DocType
-- Stock Reorder Predictor — days-to-reorder + suggested qty column (LinearReg + IsolationForest on Bin/SLE data)
-- Impact Simulator — bi-directional change tracing across linked documents
-- Export to `.xlsx` with formatting preserved (ExcelJS)
-- Formulas tab (Function Library, Name Manager, Show Formulas toggle)
+- **Flash Fill (Ctrl+E)** — auto-detect and fill patterns from 2+ examples (prefix/suffix stripping, delimiter split, case transform, regex extraction); server-side strategy engine in `api.py`
+- **Formula Autodetect / Ghost Text** — type `=` in a cell → header-aware ghost text suggests `=SUM(...)`, `=TEXT(...,"mmmm")`, etc.; Tab to accept
+- **`=DETECT_LANGUAGE(cell)`** — langdetect-powered language detection formula (returns "en", "es", "fr", etc.)
+- **`=TRANSLATE(cell, lang)`** — dict-based business term translation (Invoice→Factura, etc.; no LLM)
+
+### v3.3 — Data Integrity & Live Sync
+
+- **Frappe-Native Validators** — `beforeChange` hook validates Currency/Float/Int (non-numeric → reverts), strips whitespace, checks Link field existence (red triangle indicator on invalid)
+- **Live Pivot Refresh** — Frappe SocketIO `list_update` event triggers debounced pivot recompute; pivot sheet updates in-place without losing filter state
+
+### v3.4 — Agent Mode
+
+- **Agent Mode Sidebar** — right-side panel; deterministic intent parsing (regex, no LLM); built-in agents: amortization schedule, invoice summary, date sequence, Fibonacci, times table; all compute client-side
+
+### v3.5 — Clean Data Panel + PROMPT() Formula
+
+- **Clean Data Panel** — rapidfuzz clusters similar text values (typo detection), flags mixed-type columns; Apply to fix in bulk
+- **`=PROMPT("task", cell)`** — deterministic text extraction: first name, last name, city, country, sentiment (TextBlob), case transforms; zero LLM
 
 ---
 

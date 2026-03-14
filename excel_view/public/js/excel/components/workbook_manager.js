@@ -438,11 +438,19 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 		// Frappe fieldnames and cannot be passed to apply_field_selection().
 		// They are re-added automatically after refresh via _reapply_join_from_config().
 		const columns_config = board.columns.map((col, i) => {
-			const width = plugin?.columnWidthsMap?.get(i) ?? col.width ?? 140;
+			// HOT 6.2.2: widths stored in plugin.manualColumnWidths[] by physical index
+			const phys_i = board.hot?.toPhysicalColumn ? board.hot.toPhysicalColumn(i) : i;
+			const width = plugin?.manualColumnWidths?.[phys_i] ?? col.width ?? 140;
 			if (col._is_formula_col) {
 				return { key: col.data, label: col.title, is_formula_col: true, width };
 			}
 			if (col._is_join_col) return null; // excluded — restored via join_config
+			// Meta column: save as special marker with its actual width.
+			// apply_config will expand it to the 4 underlying fields for the server
+			// query, then call _inject_meta_column() to re-group them.
+			if (col._is_meta_col) {
+				return { fieldname: "_meta", width, is_meta_col: true };
+			}
 			return { fieldname: col.data, width };
 		}).filter(Boolean);
 
@@ -507,6 +515,12 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 		// ── cell formatting + conditional formatting (V2.6) ────────────────
 		const format_store   = { ...this.board.format_store };
 		const cond_fmt_rules = [...(this.board.cond_fmt_rules || [])];
+		// V3.1 — Encode hidden_rows + manual row_heights inside format_store
+		// (no DocType schema change needed; __ prefix avoids collision with cell keys)
+		const plugin_rh = board.hot?.getPlugin("manualRowResize");
+		if (board._hidden_rows?.length) format_store.__hidden_rows = [...board._hidden_rows];
+		const _rh_arr = plugin_rh?.manualRowHeights ? [...plugin_rh.manualRowHeights] : [];
+		if (_rh_arr.some(h => h != null)) format_store.__row_heights = _rh_arr;
 
 		// ── View tab state (V2.6) ───────────────────────────────────────────
 		const freeze_cols    = this.board._frozen_cols || 0;
@@ -539,13 +553,21 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 		// apply_field_selection.  apply_config's own step-6 refresh is the
 		// single authoritative fetch; two concurrent refreshes create a race
 		// condition where the second board.refresh() wipes joined-row values.
+		const META_AUDIT_FIELDS = ["owner", "creation", "modified_by", "modified"];
+		const has_meta_col = (config.columns_config || []).some(c => c.is_meta_col);
 		const regular_fieldnames = (config.columns_config || [])
 			.filter(c => !c.is_formula_col)
-			.map(c => c.fieldname)
+			.flatMap(c => c.is_meta_col ? META_AUDIT_FIELDS : [c.fieldname])
 			.filter(Boolean);
 
 		if (regular_fieldnames.length) {
 			board.apply_field_selection(regular_fieldnames, { silent: true });
+		}
+
+		// Re-inject meta column if the saved config had one
+		if (has_meta_col) {
+			board._inject_meta_column();
+			board.hot.updateSettings({ columns: board.columns });
 		}
 
 		// ── 2. Re-add formula columns ──────────────────────────────────────
@@ -571,10 +593,18 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 		}
 
 		// ── 3. Column widths ───────────────────────────────────────────────
+		// Build key→width map from saved config, then apply by matching actual
+		// board.columns (so meta col and any reordering are handled correctly).
 		const plugin = board.hot?.getPlugin("manualColumnResize");
 		if (plugin) {
-			(config.columns_config || []).forEach((cfg, i) => {
-				if (cfg.width) plugin.setManualSize(i, cfg.width);
+			const width_map = {};
+			(config.columns_config || []).forEach(cfg => {
+				if (cfg.width && cfg.fieldname) width_map[cfg.fieldname] = cfg.width;
+				if (cfg.width && cfg.key) width_map[cfg.key] = cfg.width;
+			});
+			board.columns.forEach((col, vis_i) => {
+				const w = width_map[col.data];
+				if (w) plugin.setManualSize(vis_i, w);
 			});
 		}
 
@@ -658,8 +688,26 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 
 		// ── 9. Restore cell formatting + CF rules (V2.6) ───────────────────────────
 		if (config.format_store && typeof config.format_store === "object") {
-			board.format_store = config.format_store;
+			// V3.1 — Extract __meta keys (hidden_rows + row_heights) from format_store
+			const { __hidden_rows, __row_heights, ...cell_formats } = config.format_store;
+			board.format_store = cell_formats;
 			frappe.model.user_settings.save(board.doctype, "excel_format_store", board.format_store);
+			// Restore hidden rows
+			if (Array.isArray(__hidden_rows) && __hidden_rows.length) {
+				board._hidden_rows = [...__hidden_rows];
+				frappe.model.user_settings.save(board.doctype, "excel_hidden_rows", board._hidden_rows);
+			}
+			// Restore manual row heights
+			if (Array.isArray(__row_heights) && __row_heights.some(h => h != null)) {
+				setTimeout(() => {
+					const rh_plugin = board.hot?.getPlugin("manualRowResize");
+					if (rh_plugin) {
+						rh_plugin.manualRowHeights = [...__row_heights];
+						board.hot.render();
+						frappe.model.user_settings.save(board.doctype, "excel_row_heights", __row_heights);
+					}
+				}, 0);
+			}
 		}
 		if (Array.isArray(config.cond_fmt_rules) && config.cond_fmt_rules.length) {
 			board.cond_fmt_rules = config.cond_fmt_rules;
@@ -739,6 +787,10 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 			excel_view_freeze_rows: 0,
 			excel_hide_gridlines:   false,
 			excel_chart_overlays:   [],
+			// V3.1 — clear hidden rows, row heights, and column widths on deselect
+			excel_hidden_rows:      [],
+			excel_row_heights:      [],
+			excel_columns:          null,
 		});
 		frappe.model.user_settings[dt] = cleared; // commit synchronous clear
 

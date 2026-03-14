@@ -27,10 +27,10 @@
 	--ev-text: #1a1a1a;
 	--ev-text-muted: #767676;
 
-	// Excel selection (blue, not green)
-	--ev-sel-border: #1264a3;
-	--ev-sel-fill: #deebf7; // solid Excel selection blue tint
-	--ev-sel-range: rgba(18, 100, 163, 0.09);
+	// Selection — Excel-green (brand color)
+	--ev-sel-border: #217346;
+	--ev-sel-fill: #e2efda;              // light green tint (Excel "Accent 6 - 80%")
+	--ev-sel-range: rgba(29, 111, 66, 0.10);
 
 	// Formula bar
 	--ev-fb-bg: #ffffff;
@@ -183,12 +183,20 @@
 		width: 100%;
 		overflow: hidden;
 		position: relative; // anchor for .ev-inline-insert-bar absolute positioning
+		// Excel Online outer grid border — thin gray border around the whole grid
+		border: 1px solid #d4d4d4;
+		border-top: none; // formula bar handles top edge
+		box-sizing: border-box;
 	}
 
 	// Default vertical alignment for all data cells
 	.handsontable td {
 		vertical-align: middle;
 	}
+}
+
+[data-theme="dark"] .ev-grid-wrapper .ev-hot-container {
+	border-color: #3a3a3a;
 }
 
 // ── Handsontable — Excel Mac faithful overrides ───────────────────────────────
@@ -198,10 +206,10 @@
 	font-size: var(--ev-font-size);
 	color: var(--ev-text);
 
-	// ── All base cells ────────────────────────────────────────────────────────
+	// ── All base cells — pure white, thin gray gridlines (Excel Online exact match) ──
 	td {
-		background-color: #d7d0d0;
-		background-image: linear-gradient(rgba(179, 163, 23, 0.37), var(--ev-sel-range));
+		background-color: var(--ev-cell-bg);
+		background-image: none;
 		color: var(--ev-text);
 		border-color: var(--ev-grid-line);  // no !important — inline style borders must win
 		padding: 0 4px;
@@ -224,9 +232,9 @@
 		line-height: 20px;
 	}
 
-	// Active column header highlight (when column selected)
+	// Active column header highlight (when column selected) — green tint
 	.ht_clone_top .htColHeader.ht__active_highlight {
-		background: #d5e8f3 !important;
+		background: var(--ev-sel-fill) !important;
 		color: var(--ev-sel-border) !important;
 	}
 
@@ -243,13 +251,28 @@
 		text-align: center;
 	}
 
-	// Active row header (when row selected)
+	// Active row header (when row selected) — green tint
 	.ht_clone_left th.ht__active_highlight {
-		background: #d5e8f3 !important;
+		background: var(--ev-sel-fill) !important;
 		color: var(--ev-sel-border) !important;
 	}
 
-	// ── Selected cell — thin Excel-blue border ─────────────────────────────────
+	// ── HOT selection border (wtBorder) — override HOT's hardcoded blue inline styles ──
+	// HOT renders these as absolutely-positioned divs with inline background-color;
+	// only !important can override them.
+	.wtBorder.current {
+		background-color: var(--ev-sel-border) !important;
+	}
+	.wtBorder.current.corner {
+		background-color: var(--ev-sel-border) !important;
+		border-color: #ffffff !important;
+	}
+	.wtBorder.area {
+		background-color: var(--ev-sel-border) !important;
+		opacity: 0.6;
+	}
+
+	// ── Selected cell — green border ────────────────────────────────────────────
 	td.current,
 	.current {
 		outline: 2px solid var(--ev-sel-border) !important;
@@ -257,11 +280,11 @@
 		background-color: var(--ev-cell-fill, var(--ev-sel-fill)) !important;
 	}
 
-	// ── Selection range — fill colour preserved, tint applied as image overlay ──
+	// ── Selection range — Excel-blue tint, no gradient ─────────────────────────
 	td.area,
 	.area {
-		background-color: #d7d0d0 !important;
-		background-image: linear-gradient(rgba(179, 163, 23, 0.37), var(--ev-sel-range)) !important;
+		background-color: var(--ev-sel-fill) !important;
+		background-image: none !important;
 	}
 
 	// ── Read-only / dimmed ────────────────────────────────────────────────────
@@ -1236,7 +1259,9 @@
 	--ev-dimmed-text: #666666;
 	--ev-fb-bg: #1e1e1e;
 	--ev-fb-border: #444444;
-	--ev-sel-range: rgba(18, 100, 163, 0.18);
+	--ev-sel-border: #4ec9b0;            // lighter green for dark bg
+	--ev-sel-fill: #1d3829;             // dark green selection tint
+	--ev-sel-range: rgba(78, 201, 176, 0.12);
 }
 
 [data-theme="dark"] {
@@ -1443,13 +1468,24 @@
 		}
 
 		.ht_clone_top .htColHeader.ht__active_highlight {
-			background: #1d3829 !important;
-			color: #4ec9b0 !important;
+			background: var(--ev-sel-fill) !important;
+			color: var(--ev-sel-border) !important;
 		}
 
 		.ht_clone_left th.ht__active_highlight {
-			background: #1d3829 !important;
-			color: #4ec9b0 !important;
+			background: var(--ev-sel-fill) !important;
+			color: var(--ev-sel-border) !important;
+		}
+
+		.wtBorder.current {
+			background-color: var(--ev-sel-border) !important;
+		}
+		.wtBorder.current.corner {
+			background-color: var(--ev-sel-border) !important;
+			border-color: #1e1e1e !important;
+		}
+		.wtBorder.area {
+			background-color: var(--ev-sel-border) !important;
 		}
 	}
 
@@ -6004,4 +6040,214 @@ button.ev-cd-add-btn {
 		background: rgba(29, 111, 66, 0.3);
 		color: #4ec9b0;
 	}
+}
+
+// ─── V3.1 — Focus Cell toolbar button ───────────────────────────────────────
+
+.ev-focus-color-wrap {
+	display: inline-flex;
+	align-items: center;
+	margin-left: 2px;
+}
+
+.ev-focus-color-btn {
+	width: 22px;
+	height: 22px;
+	padding: 3px;
+	border: 1px solid var(--border-color);
+	border-radius: 3px;
+	background: var(--fg-color);
+	cursor: pointer;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	&:hover { border-color: var(--ev-green); }
+}
+
+.ev-focus-color-swatch {
+	display: block;
+	width: 14px;
+	height: 14px;
+	border-radius: 2px;
+	border: 1px solid rgba(0,0,0,0.2);
+	background: #5b9bd5;
+}
+
+// ─── V3.1 — Precedent highlight ──────────────────────────────────────────────
+// The green outline is applied via inline style in _apply_cell_format; no extra CSS needed.
+
+[data-theme="dark"] {
+	.ev-focus-color-btn {
+		background: #2d2d2d;
+		border-color: #3a3a3a;
+		&:hover { border-color: var(--ev-green); }
+	}
+	.ev-focus-color-swatch {
+		border-color: rgba(255,255,255,0.15);
+	}
+}
+
+// ─── V3.1 — Combined Meta Column (Created / Updated) ─────────────────────────
+
+.ev-meta-cell {
+	display: flex;
+	flex-direction: column;
+	justify-content: center;
+	height: 100%;
+	gap: 1px;
+	padding: 2px 4px;
+	box-sizing: border-box;
+}
+
+.ev-meta-row {
+	display: flex;
+	align-items: center;
+	gap: 5px;
+	min-height: 18px;
+	overflow: hidden;
+
+	&.ev-meta-row--updated {
+		opacity: 0.72; // slightly muted so created row is primary
+	}
+}
+
+.ev-meta-avatar {
+	flex-shrink: 0;
+	width: 18px;
+	height: 18px;
+	border-radius: 50%;
+	font-size: 10px;
+	font-weight: 700;
+	color: #fff;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	line-height: 1;
+	text-transform: uppercase;
+
+	&.ev-meta-avatar--img {
+		object-fit: cover;
+		background: transparent;
+	}
+}
+
+.ev-meta-text {
+	display: flex;
+	flex-direction: column;
+	overflow: hidden;
+	min-width: 0;
+}
+
+.ev-meta-name {
+	font-size: 11px;
+	font-weight: 500;
+	color: var(--ev-text);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	line-height: 1.3;
+}
+
+.ev-meta-date {
+	font-size: 10px;
+	color: var(--ev-text-muted);
+	white-space: nowrap;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	line-height: 1.3;
+}
+
+[data-theme="dark"] {
+	.ev-meta-name { color: #d4d4d4; }
+	.ev-meta-date { color: #737373; }
+	.ev-meta-row--updated { opacity: 0.65; }
+}
+
+// ─── V3.1 — Meta Cell CR/MD badges ──────────────────────────────────────────
+
+.ev-meta-badge {
+	display: inline-block;
+	font-size: 9px;
+	font-weight: 700;
+	padding: 0 3px;
+	border-radius: 2px;
+	margin-right: 3px;
+	line-height: 1.5;
+	letter-spacing: 0.3px;
+	vertical-align: middle;
+}
+
+.ev-meta-badge--cr {
+	background: #e2efda;
+	color: #1d6f42;
+	border: 1px solid #a8d5b5;
+}
+
+.ev-meta-badge--md {
+	background: #fce4d6;
+	color: #c55a11;
+	border: 1px solid #f4b183;
+}
+
+[data-theme="dark"] {
+	.ev-meta-badge--cr {
+		background: rgba(29, 111, 66, 0.25);
+		color: #4ec9b0;
+		border-color: rgba(29, 111, 66, 0.4);
+	}
+	.ev-meta-badge--md {
+		background: rgba(197, 90, 17, 0.2);
+		color: #f4b183;
+		border-color: rgba(197, 90, 17, 0.35);
+	}
+}
+
+// ─── V3.1 — Hidden rows: zero-height rows need overflow hidden ────────────────
+.ev-page .handsontable tr td,
+.ev-page .handsontable tr th {
+	overflow: hidden; // ensures 0-height rows are fully hidden
+}
+
+// ─── V3.1 — "Click to unhide" indicator on row headers ────────────────────────
+.ev-page .ht_clone_left th {
+	position: relative;
+	// Shared button style
+	.ev-unhide-btn {
+		position: absolute;
+		left: 50%;
+		transform: translateX(-50%);
+		width: 16px;
+		height: 12px;
+		background: #217346;
+		border-radius: 2px;
+		display: flex;
+		align-items: center;
+		justify-content: center;
+		cursor: pointer;
+		z-index: 10;
+		font-size: 8px;
+		color: #fff;
+		line-height: 1;
+		&:hover { background: #1a5c38; }
+	}
+	// ▲ top indicator — row follows a hidden block
+	&.ev-unhide-indicator-top {
+		border-top: 2px solid #217346 !important;
+		.ev-unhide-btn--top { top: -7px; }
+	}
+	// ▼ bottom indicator — row precedes a hidden block
+	&.ev-unhide-indicator-bottom {
+		border-bottom: 2px solid #217346 !important;
+		.ev-unhide-btn--bot { bottom: -7px; }
+	}
+}
+// Mirror borders on data cells
+.ev-page .ht_master tr.ev-after-hidden-row td {
+	border-top: 2px solid rgba(33, 115, 70, 0.4) !important;
+}
+
+[data-theme-mode="dark"] {
+	.ev-page .ht_clone_left th .ev-unhide-btn { background: #1d3829; color: #4ec9b0; }
+	.ev-page .ht_clone_left th.ev-unhide-indicator-top { border-top-color: #4ec9b0 !important; }
+	.ev-page .ht_clone_left th.ev-unhide-indicator-bottom { border-bottom-color: #4ec9b0 !important; }
 }

@@ -66,7 +66,31 @@ frappe.views.excel.ContextMenu = class ContextMenu {
 					disabled: () => !board.list_view.can_write,
 				},
 
-				sep1: "---------",
+				// V3.1 — Hide / Unhide rows (HOT 6: uses board._hide_rows / _unhide_all_rows)
+			hide_row: {
+				name: () => {
+					const sel = board.hot.getSelected();
+					const count = sel?.length ? Math.abs(sel[0][2] - sel[0][0]) + 1 : 1;
+					return count > 1 ? __("Hide {0} Rows", [count]) : __("Hide Row");
+				},
+				callback: (key, selection) => {
+					const rows = [];
+					selection.forEach(({ start, end }) => {
+						const r1 = Math.min(start.row, end.row);
+						const r2 = Math.max(start.row, end.row);
+						for (let r = r1; r <= r2; r++) rows.push(r);
+					});
+					board._hide_rows(rows);
+				},
+			},
+
+			show_rows: {
+				name: () => __("Unhide Rows"),
+				disabled: () => !board._hidden_rows?.length,
+				callback: () => board._unhide_all_rows(),
+			},
+
+			sep1: "---------",
 
 				// ── Clipboard ─────────────────────────────────────────────────
 				copy: {

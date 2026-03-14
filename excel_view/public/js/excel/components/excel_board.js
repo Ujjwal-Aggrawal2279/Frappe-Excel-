@@ -44,6 +44,17 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this._has_unsaved_changes = false;
 		// Inline insert: index of the pending _is_new row (-1 = none)
 		this._new_row_idx = -1;
+		// V3.1 — Hidden rows (board-level array, HOT 6 uses updateSettings not getPlugin)
+		this._hidden_rows = [];
+		// V3.1 — Focus Cell (crosshair)
+		this._focus_enabled = false;
+		this._focus_color = "#217346"; // Excel green default
+		this._focus_row = -1;
+		this._focus_col = -1;
+		// V3.1 — Formula Precedent Highlighting
+		this._precedent_cells = new Set();
+		// V3.1 — Repeat Last Action (F4)
+		this._last_action = null;
 		this._setup();
 	}
 
@@ -110,6 +121,8 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		// this.columns = visible subset. Slicing keeps them independent.
 		this._master_columns = [...this.columns];
 		this._hidden_col_keys = new Set(); // data keys of hidden columns
+		// V3.1 — Inject combined meta column (Created/Updated info) if std fields present
+		this._inject_meta_column();
 		this.matrix = this.data_manager.to_matrix(this.data, this.columns);
 
 		// Initialise formula engine
@@ -128,7 +141,24 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this._init_container();
 		// Restore frozen-column class from user_settings (before HOT init)
 		if (this._frozen_cols > 0) this.$hot_container.addClass("ev-cols-frozen");
+		// V3.1 — Load hidden rows BEFORE _init_hot() so afterRenderer/afterGetRowHeader
+		// apply display:none on the very first render (no setTimeout patch needed)
+		const _saved_hidden = frappe.get_user_settings(this.doctype)?.excel_hidden_rows;
+		if (Array.isArray(_saved_hidden) && _saved_hidden.length) {
+			this._hidden_rows = [..._saved_hidden];
+		}
 		this._init_hot();
+		// V3.1 — Restore manual row heights AFTER HOT init (plugin must exist)
+		const _saved_rh = frappe.get_user_settings(this.doctype)?.excel_row_heights;
+		if (Array.isArray(_saved_rh) && _saved_rh.some(h => h != null)) {
+			setTimeout(() => {
+				const rh_plugin = this.hot?.getPlugin("manualRowResize");
+				if (rh_plugin) {
+					rh_plugin.manualRowHeights = [..._saved_rh];
+					this.hot.render();
+				}
+			}, 0);
+		}
 
 		// V2.3 — Wire the re-render callback now that this.hot exists.
 		frappe.views.excel.formula_manager?.set_rerender(() => this.hot?.render());
@@ -163,6 +193,13 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		const saved_charts = frappe.get_user_settings(this.doctype)?.excel_chart_overlays;
 		if (Array.isArray(saved_charts) && saved_charts.length) {
 			setTimeout(() => this._restore_chart_overlays(saved_charts), 100);
+		}
+
+		// V3.1 — Restore Focus Cell settings
+		const saved_focus = frappe.get_user_settings(this.doctype)?.excel_focus_cell;
+		if (saved_focus) {
+			this._focus_enabled = !!saved_focus.enabled;
+			if (saved_focus.color) this._focus_color = saved_focus.color;
 		}
 
 		// 8. Read-only banner — shown when the user has no write access
@@ -237,6 +274,11 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			// Behaviour
 			manualColumnResize: true,
 			manualRowResize: true,
+			// V3.1 — rowHeights: 0 for hidden rows, 42px when meta col present, else 23px
+			rowHeights: (row) => {
+				if (this._hidden_rows?.includes(row)) return 0;
+				return this.columns?.some(c => c._is_meta_col) ? 42 : 23;
+			},
 			columnSorting: true,
 			allowInsertRow: this.list_view.can_create,
 			allowRemoveRow: this.list_view.can_write,
@@ -259,6 +301,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 
 			// V2.6 — Merge cells plugin enabled
 			mergeCells: true,
+
 
 			// Frozen columns — restored from user_settings
 			fixedColumnsLeft: this._frozen_cols,
@@ -308,17 +351,71 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			afterChange: (changes, source) => this._on_change(changes, source),
 			afterSelection: (r, c, r2, c2) => this._on_selection(r, c, r2, c2),
 			afterColumnResize: (col, size) => this._on_col_resize(col, size),
+			afterRowResize: (row, size) => this._on_row_resize(row, size),
 			afterRender: () => this._on_render(),
 			afterRenderer: (TD, row, col, prop, value) => this._apply_cell_format(TD, row, col, value),
 			afterGetColHeader: (col, TH) => this._apply_col_header_format(TH, col),
 			afterOnCellMouseDown: (e, coords) => this._on_tree_row_click(e, coords),
 			afterGetRowHeader: (row, TH) => {
+				// V3.1 — Hide row header TR for hidden rows (left clone overlay)
+				if (TH.parentNode) {
+					if (this._hidden_rows?.includes(row)) {
+						TH.parentNode.style.cssText = "display:none!important;height:0!important;";
+					} else {
+						TH.parentNode.style.cssText = "";
+						// ▲ indicator: this row follows a hidden block
+						const prev_hidden = row > 0 && this._hidden_rows?.includes(row - 1);
+						// ▼ indicator: this row precedes a hidden block (next row is hidden)
+						const next_hidden = this._hidden_rows?.includes(row + 1);
+						TH.classList.toggle("ev-unhide-indicator-top", !!prev_hidden);
+						TH.classList.toggle("ev-unhide-indicator-bottom", !!next_hidden);
+						// Inject/remove ▲ button (top — unhide block above)
+						let btn_top = TH.querySelector(".ev-unhide-btn--top");
+						if (prev_hidden && !btn_top) {
+							btn_top = document.createElement("div");
+							btn_top.className = "ev-unhide-btn ev-unhide-btn--top";
+							btn_top.title = "Click to unhide rows";
+							btn_top.innerHTML = "&#9650;";
+							btn_top.addEventListener("click", (e) => {
+								e.stopPropagation();
+								this._unhide_rows_group(row);
+							});
+							TH.appendChild(btn_top);
+						} else if (!prev_hidden && btn_top) {
+							btn_top.remove();
+						}
+						// Inject/remove ▼ button (bottom — unhide block below)
+						let btn_bot = TH.querySelector(".ev-unhide-btn--bot");
+						if (next_hidden && !btn_bot) {
+							btn_bot = document.createElement("div");
+							btn_bot.className = "ev-unhide-btn ev-unhide-btn--bot";
+							btn_bot.title = "Click to unhide rows";
+							btn_bot.innerHTML = "&#9660;";
+							btn_bot.addEventListener("click", (e) => {
+								e.stopPropagation();
+								// unhide block below: find first hidden row after this row
+								this._unhide_rows_group_below(row);
+							});
+							TH.appendChild(btn_bot);
+						} else if (!next_hidden && btn_bot) {
+							btn_bot.remove();
+						}
+					}
+				}
 				const row_data = this.list_view.data?.[row];
 				if (row_data?._tree_is_header && row_data._tree_size > 1) {
 					const expanded = this._expanded_keys?.has(row_data._tree_group_key);
 					TH.innerHTML = `<div class="ev-tree-th" title="Click to ${expanded ? 'collapse' : 'expand'}">${expanded ? '▼' : '▶'} <span class="ev-tree-badge">${row_data._tree_size}</span></div>`;
 				} else if (row_data?._tree_is_child) {
 					TH.innerHTML = `<div class="ev-tree-child-th">└</div>`;
+				}
+			},
+			// V3.1 — intercept F4 before HOT swallows it (HOT uses F4 for formula cycling)
+			beforeKeyDown: (e) => {
+				if (e.key === "F4" && !e.ctrlKey && !e.altKey && !e.shiftKey) {
+					e.stopImmediatePropagation();
+					e.preventDefault();
+					setTimeout(() => this._repeat_last_action(), 0);
 				}
 			},
 			// i18n
@@ -376,6 +473,14 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		// Join skeleton: shimmer animation while api.get_joined_data is in-flight
 		if (this.columns[col]?._is_join_loading) {
 			TD.classList.add("ev-cell-join-loading");
+			return;
+		}
+
+		// V3.1 — Meta column: render combined Created/Updated cell
+		if (this.columns[col]?._is_meta_col) {
+			this._render_meta_cell(TD, this.list_view?.data?.[row]);
+			TD.style.padding = "0";
+			TD.style.verticalAlign = "middle";
 			return;
 		}
 
@@ -526,6 +631,234 @@ frappe.views.ExcelBoard = class ExcelBoard {
 				}
 			}
 		}
+
+		// V3.1 — Hide rows: collapse the TR for hidden rows (HOT 6.2.2 has no hiddenRows plugin)
+		if (TD.parentNode) {
+			if (this._hidden_rows?.includes(row)) {
+				TD.parentNode.style.cssText = "display:none!important;height:0!important;";
+			} else {
+				if (TD.parentNode.style.display === "none") TD.parentNode.style.cssText = "";
+				// Green top-border indicator on the data row that follows a hidden block
+				if (col === 0) {
+					const after_hidden = row > 0 && this._hidden_rows?.includes(row - 1);
+					TD.parentNode.classList.toggle("ev-after-hidden-row", after_hidden);
+				}
+			}
+		}
+
+		// V3.1 — Focus Cell crosshair (applied after CF so it can override)
+		this._apply_focus_overlay(TD, row, col);
+
+		// V3.1 — Formula Precedent highlighting (green outline on referenced cells)
+		if (this._precedent_cells?.has(`${row}:${col}`)) {
+			TD.style.setProperty("outline", "2px solid #4caf50", "important");
+			TD.style.setProperty("outline-offset", "-2px", "important");
+		} else {
+			TD.style.removeProperty("outline");
+			TD.style.removeProperty("outline-offset");
+		}
+	}
+
+	// V3.1 — Focus Cell crosshair overlay (applied after CF so it has priority)
+	_apply_focus_overlay(TD, row, col) {
+		if (!this._focus_enabled || this._focus_row < 0) return;
+		const on_row = (row === this._focus_row);
+		const on_col = (col === this._focus_col);
+		if (!on_row && !on_col) return;
+		const hex = this._focus_color || "#217346";
+		const r = parseInt(hex.slice(1, 3), 16);
+		const g = parseInt(hex.slice(3, 5), 16);
+		const b = parseInt(hex.slice(5, 7), 16);
+		const alpha = (on_row && on_col) ? 0.38 : 0.18; // brighter: 18% row/col, 38% intersection
+		TD.style.setProperty("background-color", `rgba(${r},${g},${b},${alpha})`, "important");
+		TD.style.setProperty("background-image", "none", "important");
+	}
+
+	// V3.1 — Toggle Focus Cell crosshair
+	_toggle_focus_cell(enabled) {
+		this._focus_enabled = enabled !== undefined ? enabled : !this._focus_enabled;
+		this.hot?.render();
+		frappe.model.user_settings.save(this.doctype, "excel_focus_cell",
+			{ enabled: this._focus_enabled, color: this._focus_color });
+	}
+
+	// V3.1 — Set focus cell color
+	_set_focus_color(color) {
+		this._focus_color = color;
+		if (this._focus_enabled) this.hot?.render();
+		frappe.model.user_settings.save(this.doctype, "excel_focus_cell",
+			{ enabled: this._focus_enabled, color: this._focus_color });
+	}
+
+	// V3.1 — Hide rows (HOT 6.2.2 community: no hiddenRows plugin)
+	// State update + hot.render() — afterRenderer/afterGetRowHeader/afterRender handle the DOM
+	_hide_rows(rows_to_hide) {
+		rows_to_hide.forEach(r => { if (!this._hidden_rows.includes(r)) this._hidden_rows.push(r); });
+		this.hot?.render();
+		this._save_hidden_rows();
+	}
+
+	// V3.1 — Unhide a specific group of hidden rows (rows between prev_visible and next_visible)
+	_unhide_rows_group(next_visible_row) {
+		// Find the contiguous block of hidden rows just above next_visible_row
+		const to_show = [];
+		let r = next_visible_row - 1;
+		while (r >= 0 && this._hidden_rows.includes(r)) {
+			to_show.push(r);
+			r--;
+		}
+		this._hidden_rows = this._hidden_rows.filter(x => !to_show.includes(x));
+		this.hot?.render();
+		this._save_hidden_rows();
+	}
+
+	// V3.1 — Unhide contiguous hidden block below a visible row
+	_unhide_rows_group_below(prev_visible_row) {
+		const to_show = [];
+		const total = this.list_view?.data?.length || 0;
+		let r = prev_visible_row + 1;
+		while (r < total && this._hidden_rows.includes(r)) {
+			to_show.push(r);
+			r++;
+		}
+		this._hidden_rows = this._hidden_rows.filter(x => !to_show.includes(x));
+		this.hot?.render();
+		this._save_hidden_rows();
+	}
+
+	// V3.1 — Unhide all hidden rows
+	_unhide_all_rows() {
+		this._hidden_rows = [];
+		this.hot?.render();
+		this._save_hidden_rows();
+	}
+
+	// V3.1 — Save hidden rows to user_settings
+	_save_hidden_rows() {
+		frappe.model.user_settings.save(this.doctype, "excel_hidden_rows", [...this._hidden_rows]);
+	}
+
+	// V3.1 — Repeat Last Action
+	_repeat_last_action() {
+		if (!this._last_action) return;
+		const sel = this.hot?.getSelectedLast();
+		if (!sel) return;
+		const [r1, c1, r2, c2] = sel;
+		const min_r = Math.min(r1, r2), max_r = Math.max(r1, r2);
+		const min_c = Math.min(c1, c2), max_c = Math.max(c1, c2);
+		const act = this._last_action;
+		switch (act.type) {
+			case "format":
+				this.toolbar_component?._apply_format_to_range(act.fmt, r1, c1, r2, c2);
+				break;
+			case "border":
+				this.toolbar_component?._apply_border_preset(act.preset, r1, c1, r2, c2);
+				break;
+			case "numfmt":
+				this.toolbar_component?._apply_format({ numfmt: act.numfmt });
+				break;
+			case "col_resize": {
+				const cols = Array.from({ length: max_c - min_c + 1 }, (_, i) => min_c + i);
+				this._apply_col_resize(cols, act.size);
+				break;
+			}
+			case "row_resize": {
+				const rows = Array.from({ length: max_r - min_r + 1 }, (_, i) => min_r + i);
+				this._apply_row_resize(rows, act.size);
+				break;
+			}
+		}
+	}
+
+	// ── V3.1 — Combined Meta Column ────────────────────────────────────────────
+
+	/**
+	 * If the current column list includes the 4 Frappe std audit fields
+	 * (owner, creation, modified_by, modified), inject a single virtual "_meta"
+	 * column right after the name column and hide the 4 originals.
+	 */
+	_inject_meta_column() {
+		const META_FIELDS = ["owner", "creation", "modified_by", "modified"];
+		const has_meta = META_FIELDS.some(f =>
+			this.columns.some(c => c.data === f)
+		);
+		if (!has_meta) return;
+
+		// Build virtual meta column (readOnly, special renderer)
+		const meta_col = {
+			data: "_meta",
+			title: "Created / Updated",
+			readOnly: true,
+			_readonly: true,
+			_is_meta_col: true,
+			width: 200,
+			renderer: "text", // overridden in afterRenderer
+			className: "htDimmed",
+		};
+
+		// Insert after name column (index 0)
+		this.columns.splice(1, 0, meta_col);
+		this._master_columns.splice(1, 0, meta_col);
+
+		// Hide the 4 original columns
+		META_FIELDS.forEach(f => {
+			if (this.columns.find(c => c.data === f)) {
+				this._hidden_col_keys.add(f);
+			}
+		});
+
+		// Rebuild visible columns
+		this.columns = this._master_columns.filter(c => !this._hidden_col_keys.has(c.data));
+	}
+
+	/**
+	 * Render the combined meta cell HTML.
+	 * Shows Created By (avatar + name + date) and Updated By rows.
+	 */
+	_render_meta_cell(TD, row_data) {
+		if (!row_data) { TD.textContent = ""; return; }
+
+		const _avatar = (user, fullname) => {
+			const info = frappe.boot?.user_info?.[user];
+			const img = info?.image;
+			const initials = (fullname || user || "?").substring(0, 1).toUpperCase();
+			if (img) {
+				return `<img src="${frappe.utils.escape_html(img)}" class="ev-meta-avatar ev-meta-avatar--img" title="${frappe.utils.escape_html(fullname || user)}">`;
+			}
+			// Color-coded letter avatar
+			const colors = ["#e53935","#8e24aa","#1565c0","#00838f","#2e7d32","#ef6c00","#6d4c41","#546e7a"];
+			const bg = colors[(user || "").charCodeAt(0) % colors.length];
+			return `<span class="ev-meta-avatar" style="background:${bg}" title="${frappe.utils.escape_html(fullname || user)}">${frappe.utils.escape_html(initials)}</span>`;
+		};
+
+		const _fmt_dt = (val) => {
+			if (!val) return "";
+			try {
+				const d = frappe.datetime.str_to_user(val) || val;
+				return String(d).replace(" ", "\u00a0"); // non-breaking space keeps date+time together
+			} catch (_) { return String(val).substring(0, 16); }
+		};
+
+		const owner = row_data.owner || "";
+		const owner_info = frappe.boot?.user_info?.[owner];
+		const owner_name = owner_info?.fullname || owner;
+
+		const modified_by = row_data.modified_by || "";
+		const mod_info = frappe.boot?.user_info?.[modified_by];
+		const mod_name = mod_info?.fullname || modified_by;
+
+		TD.innerHTML = `
+			<div class="ev-meta-cell">
+				<div class="ev-meta-row" title="${frappe.utils.escape_html(owner_name)}">
+					${_avatar(owner, owner_name)}
+					<span class="ev-meta-date"><span class="ev-meta-badge ev-meta-badge--cr">CR</span>${_fmt_dt(row_data.creation)}</span>
+				</div>
+				<div class="ev-meta-row ev-meta-row--updated" title="${frappe.utils.escape_html(mod_name)}">
+					${_avatar(modified_by, mod_name)}
+					<span class="ev-meta-date"><span class="ev-meta-badge ev-meta-badge--md">MD</span>${_fmt_dt(row_data.modified)}</span>
+				</div>
+			</div>
+		`;
 	}
 
 	/**
@@ -982,19 +1315,122 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this.formula_bar_component.update(row, col);
 		this.toolbar_component?.sync(row, col);
 		this.status_bar?.update(row, col, row2 ?? row, col2 ?? col);
-	}
 
+		// V3.1 — Focus Cell: track active cell for crosshair
+		const focus_changed = this._focus_row !== row || this._focus_col !== col;
+		this._focus_row = row;
+		this._focus_col = col;
+		if (this._focus_enabled && focus_changed) this.hot?.render();
+
+		// V3.1 — Formula Precedent highlighting
+		const prev_size = this._precedent_cells?.size || 0;
+		this._precedent_cells = new Set();
+		const formula = this.formula_bridge?.get_formula?.(row, col);
+		if (formula && this.formula_bridge?.hf) {
+			try {
+				const deps = this.formula_bridge.hf.getCellDependencies(
+					{ sheet: this.formula_bridge.sheet_id || 0, row, col }
+				);
+				deps.forEach(dep => {
+					if (dep.row !== undefined && dep.col !== undefined) {
+						this._precedent_cells.add(`${dep.row}:${dep.col}`);
+					} else if (dep.start) {
+						for (let rr = dep.start.row; rr <= dep.end.row; rr++) {
+							for (let cc = dep.start.col; cc <= dep.end.col; cc++) {
+								this._precedent_cells.add(`${rr}:${cc}`);
+							}
+						}
+					}
+				});
+				if (deps.length || prev_size) this.hot?.render();
+			} catch (_) { /* non-formula cell */ }
+		} else if (prev_size) {
+			this.hot?.render(); // clear old outlines
+		}
+	}
 	_on_col_resize(col_index, new_width) {
+		// HOT 6.2.2: widths stored in plugin.manualColumnWidths[] by physical index
+		const plugin = this.hot.getPlugin("manualColumnResize");
 		const widths = this.columns.map((_, i) => {
-			const plugin = this.hot.getPlugin("manualColumnResize");
-			return plugin.columnWidthsMap?.get(i) || this.columns[i]?.width || 140;
+			const phys = this.hot.toPhysicalColumn ? this.hot.toPhysicalColumn(i) : i;
+			return plugin.manualColumnWidths[phys] || this.columns[i]?.width || 140;
 		});
 		this.column_manager.save_widths(widths);
+		// V3.1 — Record for F4 Repeat Last Action (skip undefined from double-click auto-fit)
+		if (new_width != null) this._last_action = { type: "col_resize", size: new_width };
+	}
+
+	_on_row_resize(row_index, new_height) {
+		// V3.1 — Record for F4 Repeat Last Action
+		if (new_height != null) this._last_action = { type: "row_resize", size: new_height };
+		// Persist to user_settings so heights survive refresh
+		this._schedule_row_heights_save();
+	}
+
+	/** Debounced save of manual row heights to user_settings (600ms). */
+	_schedule_row_heights_save() {
+		clearTimeout(this._rh_save_timer);
+		this._rh_save_timer = setTimeout(() => {
+			const plugin = this.hot?.getPlugin("manualRowResize");
+			if (!plugin) return;
+			const heights = [...(plugin.manualRowHeights || [])];
+			frappe.model.user_settings.save(this.doctype, "excel_row_heights", heights);
+		}, 600);
+	}
+
+	// V3.1 — Apply a column width to a set of columns (used by F4 repeat)
+	// HOT 6.2.2 stores widths in plugin.manualColumnWidths[] (physical col index)
+	_apply_col_resize(cols, size) {
+		const plugin = this.hot?.getPlugin("manualColumnResize");
+		if (!plugin) return;
+		cols.forEach(col => {
+			const phys = this.hot.toPhysicalColumn ? this.hot.toPhysicalColumn(col) : col;
+			plugin.manualColumnWidths[phys] = size;
+		});
+		this.hot.render();
+		// Persist widths using same physical index read-back
+		const widths = this.columns.map((_, i) => {
+			const phys = this.hot.toPhysicalColumn ? this.hot.toPhysicalColumn(i) : i;
+			return plugin.manualColumnWidths[phys] || this.columns[i]?.width || 140;
+		});
+		this.column_manager.save_widths(widths);
+	}
+
+	// V3.1 — Apply a row height to a set of rows (used by F4 repeat)
+	// HOT 6.2.2 stores heights in plugin.manualRowHeights[] (physical row index)
+	_apply_row_resize(rows, size) {
+		const plugin = this.hot?.getPlugin("manualRowResize");
+		if (!plugin) return;
+		rows.forEach(row => {
+			// Skip hidden rows — keep them at 0
+			if (!this._hidden_rows?.includes(row)) {
+				plugin.manualRowHeights[row] = size;
+			}
+		});
+		this.hot.render();
 	}
 
 	_on_render() {
 		// Guard: afterRender fires during HOT's own init, before this.hot is assigned
 		if (!this.hot) return;
+		// V3.1 — Sync left clone (row headers) with master table hidden rows.
+		// afterGetRowHeader is not always called by updateSettings; this ensures
+		// the row header TRs are always in sync with the data TRs after every render.
+		if (this._hidden_rows?.length) {
+			const masterTRs = this.hot.rootElement?.querySelectorAll(".ht_master tbody tr");
+			const leftTRs = this.hot.rootElement?.querySelectorAll(".ht_clone_left tbody tr");
+			if (masterTRs && leftTRs) {
+				masterTRs.forEach((tr, i) => {
+					const ltr = leftTRs[i];
+					if (!ltr) return;
+					if (tr.style.display === "none") {
+						ltr.style.cssText = "display:none!important;height:0!important;";
+					} else if (ltr.style.display === "none") {
+						ltr.style.cssText = "";
+					}
+				});
+			}
+		}
 		const sel = this.hot.getSelectedLast();
 		if (sel) {
 			this.formula_bar_component.update(sel[0], sel[1]);
@@ -1043,6 +1479,12 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			if (ctrl && e.key === "u") {
 				e.preventDefault();
 				this.toolbar_component?.toggle("underline");
+			}
+
+			// V3.1 — F4: Repeat Last Action
+			if (e.key === "F4" && !ctrl && !e.altKey && !e.shiftKey) {
+				e.preventDefault();
+				this._repeat_last_action();
 			}
 		});
 	}
@@ -1712,8 +2154,10 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	 *   joined-row values that were just merged into list_view.data.
 	 */
 	apply_field_selection(fieldnames, { silent = false } = {}) {
-		// Separate CT fields (table__child) from regular Frappe fields
-		const regular = fieldnames.filter(f => f !== "name" && !f.includes("__"));
+		// Virtual column keys that must never reach the Frappe server
+		const VIRTUAL_KEYS = new Set(["_meta", "_is_meta_col", "_is_join_col", "_is_lookup_col", "_is_formula_col"]);
+		// Separate CT fields (table__child) from regular Frappe fields; exclude virtual keys
+		const regular = fieldnames.filter(f => f !== "name" && !f.includes("__") && !VIRTUAL_KEYS.has(f));
 		this._ct_fieldnames = fieldnames.filter(f => f.includes("__"));
 
 		// column_manager gets ALL fields (regular + CT) for column config

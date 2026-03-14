@@ -328,6 +328,18 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 							<input type="checkbox" class="ev-gridlines-toggle" checked style="display:none">
 						`)}
 
+
+						${this._grp(__("Focus"), `
+							<button class="ev-tb-btn ev-tb-btn--lg ev-focus-toggle" title="${__("Toggle Focus Cell Crosshair")}">
+								<svg class="ev-btn-icon" width="20" height="20" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.2"><line x1="7" y1="1" x2="7" y2="13"/><line x1="1" y1="7" x2="13" y2="7"/><circle cx="7" cy="7" r="2" fill="currentColor" stroke="none"/></svg>
+								<span class="ev-btn-label ev-focus-label">${__("Focus Cell")}</span>
+							</button>
+							<div class="ev-focus-color-wrap">
+								<button class="ev-tb-btn ev-focus-color-btn" title="${__("Focus Color")}">
+									<span class="ev-focus-color-swatch" style="background:#217346"></span>
+								</button>
+							</div>
+						`)}
 					</div><!-- /view pane -->
 
 				</div><!-- /ev-ribbon-content -->
@@ -764,6 +776,47 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 			frappe.model.user_settings.save(this.board.doctype, "excel_hide_gridlines", !show);
 		});
 
+		// ── View tab: Focus Cell toggle ─────────────────────────────────────
+		$w.on("click", ".ev-focus-toggle", (e) => {
+			const enabled = !this.board._focus_enabled;
+			this.board._toggle_focus_cell(enabled);
+			$(e.currentTarget).toggleClass("ev-active", enabled);
+			$(this.wrapper).find(".ev-focus-label").text(
+				enabled ? __("Focus: ON") : __("Focus Cell")
+			);
+		});
+
+		// ── View tab: Focus Color picker ─────────────────────────────────────
+		$w.on("click", ".ev-focus-color-btn", (e) => {
+			e.stopPropagation();
+			const rect = e.currentTarget.getBoundingClientRect();
+			$("#ev-focus-color-portal").remove();
+			const COLORS = [
+				"#000000","#7f7f7f","#c00000","#ff0000","#ff7f00","#ffff00","#00b050","#00b0f0","#0070c0","#7030a0",
+				"#ffffff","#d9d9d9","#ffd966","#f4b183","#a9d18e","#9dc3e6","#5b9bd5","#ed7d31","#a5a5a5","#ffc000",
+			];
+			const $portal = $(`
+				<div id="ev-focus-color-portal"
+					style="position:fixed;top:${rect.bottom + 4}px;left:${rect.left}px;
+					       z-index:20000;background:var(--fg-color);
+					       border:1px solid var(--border-color);border-radius:4px;
+					       padding:8px;box-shadow:0 4px 14px rgba(0,0,0,.18);">
+					<div style="display:grid;grid-template-columns:repeat(10,16px);gap:2px;">
+						${COLORS.map(c => `<div class="ev-focus-swatch-item" data-color="${c}"
+							style="width:16px;height:16px;background:${c};border:1px solid rgba(0,0,0,.25);cursor:pointer;border-radius:2px;"
+							title="${c}"></div>`).join("")}
+					</div>
+				</div>
+			`).appendTo(document.body);
+			$portal.on("click", ".ev-focus-swatch-item", (ev) => {
+				const color = $(ev.currentTarget).data("color");
+				this.board._set_focus_color(color);
+				$(this.wrapper).find(".ev-focus-color-swatch").css("background", color);
+				$portal.remove();
+			});
+			setTimeout(() => $(document).one("click.ev-focus-portal", () => $portal.remove()), 100);
+		});
+
 		// ── Close popups on outside click ───────────────────────────────────
 		$(document).on("click.ev-toolbar", (e) => {
 			if (!$(e.target).closest(".ev-palette-popup, .ev-color-trigger").length) {
@@ -846,12 +899,20 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		$(this.wrapper).find(".ev-bg-bar").css("background", bc);
 	}
 
-	/** Sync View-tab UI state (gridlines checkbox) from current board state. */
+	/** Sync View-tab UI state (gridlines + focus cell) from current board state. */
 	_sync_view_state() {
 		const hidden = frappe.get_user_settings(this.board.doctype)?.excel_hide_gridlines;
 		if (hidden) {
 			$(this.wrapper).find(".ev-gridlines-toggle").prop("checked", false);
 			$(this.wrapper).find(".ev-gridlines-btn").removeClass("ev-active");
+		}
+		// V3.1 — Sync Focus Cell button state
+		if (this.board._focus_enabled) {
+			$(this.wrapper).find(".ev-focus-toggle").addClass("ev-active");
+			$(this.wrapper).find(".ev-focus-label").text(__("Focus: ON"));
+		}
+		if (this.board._focus_color) {
+			$(this.wrapper).find(".ev-focus-color-swatch").css("background", this.board._focus_color);
 		}
 	}
 
@@ -906,12 +967,15 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 	_toggle_format(fmt_key) {
 		const range = this._get_range();
 		if (!range) return;
+		let recorded_fmt = null;
 		if (fmt_key.startsWith("align")) {
 			const val = { alignLeft: "left", alignCenter: "center", alignRight: "right" }[fmt_key];
 			this._apply_to_range(range, (fmt) => { fmt.align = fmt.align === val ? null : val; });
+			recorded_fmt = { align: val };
 		} else if (fmt_key.startsWith("valign")) {
 			const val = { valignTop: "top", valignMiddle: "middle", valignBottom: "bottom" }[fmt_key];
 			this._apply_to_range(range, (fmt) => { fmt.valign = val; });
+			recorded_fmt = { valign: val };
 		} else if (fmt_key === "numfmt_pct") {
 			this._apply_format({ numfmt: "percentage" });
 			this.$numfmt_sel.val("percentage");
@@ -919,6 +983,11 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		} else {
 			const all_on = this._all_have(range, fmt_key);
 			this._apply_to_range(range, (fmt) => { fmt[fmt_key] = !all_on; });
+			recorded_fmt = { [fmt_key]: !all_on };
+		}
+		// V3.1 — Record for F4 Repeat Last Action
+		if (recorded_fmt) {
+			this.board._last_action = { type: "format", fmt: recorded_fmt };
 		}
 		const HEIGHT_FMT = new Set(["bold", "wrap"]);
 		if (HEIGHT_FMT.has(fmt_key)) {
@@ -939,6 +1008,18 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		} else {
 			this.board.hot.render();
 		}
+		// V3.1 — Record for F4 Repeat Last Action
+		if ("numfmt" in fmt_obj) {
+			this.board._last_action = { type: "numfmt", numfmt: fmt_obj.numfmt };
+		} else {
+			this.board._last_action = { type: "format", fmt: { ...fmt_obj } };
+		}
+	}
+
+	// V3.1 — Apply format to an explicit range (used by _repeat_last_action)
+	_apply_format_to_range(fmt_obj, r1, c1, r2, c2) {
+		this._apply_to_range({ r1, c1, r2, c2 }, (fmt) => Object.assign(fmt, fmt_obj));
+		this.board.hot.render();
 	}
 
 	_change_decimals(delta) {
@@ -1001,6 +1082,8 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		// Mirror top-edge border onto column header bottom for selected columns
 		this._apply_header_borders(range, preset, thin, thick);
 		this.board.hot.render();
+		// V3.1 — Record for F4 Repeat Last Action
+		this.board._last_action = { type: "border", preset };
 	}
 
 	_apply_header_borders(range, preset, thin, thick) {
