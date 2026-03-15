@@ -207,7 +207,7 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 				chart_overlays:  JSON.stringify(config.chart_overlays),
 				format_store:    JSON.stringify(config.format_store),
 				cond_fmt_rules:  JSON.stringify(config.cond_fmt_rules),
-				view_state:      JSON.stringify({ freeze_cols: config.freeze_cols, freeze_rows: config.freeze_rows, hide_gridlines: config.hide_gridlines }),
+				view_state:      JSON.stringify({ freeze_cols: config.freeze_cols, freeze_rows: config.freeze_rows, hide_gridlines: config.hide_gridlines, smart_lookups: config.smart_lookups || null }),
 				is_public:       is_public ? 1 : 0,
 				workbook_name:   workbook_name || null,
 			},
@@ -379,9 +379,11 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 					chart_overlays:  this._parse_json(wb.chart_overlays,  []),
 					format_store:    this._parse_json(wb.format_store,    {}),
 					cond_fmt_rules:  this._parse_json(wb.cond_fmt_rules,  []),
-					freeze_cols:     _vs.freeze_cols  || 0,
-					freeze_rows:     _vs.freeze_rows  || 0,
+					freeze_cols:     _vs.freeze_cols    || 0,
+					freeze_rows:     _vs.freeze_rows    || 0,
 					hide_gridlines:  _vs.hide_gridlines || false,
+					// smart_lookups packed inside view_state (no extra DocType field needed)
+					smart_lookups:   Array.isArray(_vs.smart_lookups) ? _vs.smart_lookups : null,
 				};
 
 				this._current = { name: wb.name, title: wb.title };
@@ -405,10 +407,19 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 
 	/** Persist current workbook ref to user_settings (survives page refresh). */
 	_save_current_to_user_settings(name, title) {
+		const val = name ? { name, title } : null;
+		// Frappe's save() reads the in-memory cache, deep-copies it, modifies the copy,
+		// and only updates frappe.model.user_settings[doctype] in the SERVER CALLBACK.
+		// If apply_config triggers additional save() calls before the callback returns,
+		// those calls read the stale cache and produce POSTs without excel_current_workbook.
+		// Fix: patch the in-memory cache synchronously BEFORE calling save() so all
+		// concurrent save() calls in apply_config see the correct value immediately.
+		const _cache = frappe.model.user_settings[this.board.doctype];
+		if (_cache) _cache.excel_current_workbook = val;
 		frappe.model.user_settings.save(
 			this.board.doctype,
 			"excel_current_workbook",
-			name ? { name, title } : null,
+			val,
 		);
 	}
 
@@ -444,7 +455,8 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 			if (col._is_formula_col) {
 				return { key: col.data, label: col.title, is_formula_col: true, width };
 			}
-			if (col._is_join_col) return null; // excluded — restored via join_config
+			if (col._is_join_col)    return null; // excluded — restored via join_config
+			if (col._is_lookup_col) return null; // excluded — restored via smart_lookups config
 			// Meta column: save as special marker with its actual width.
 			// apply_config will expand it to the 4 underlying fields for the server
 			// query, then call _inject_meta_column() to re-group them.
@@ -527,7 +539,8 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 		const freeze_rows    = this.board._frozen_rows || 0;
 		const hide_gridlines = this.board.$hot_container?.hasClass("ev-hide-gridlines") || false;
 
-		return { columns_config: root_columns_config, formula_columns, filters, sort_by, join_config, sheets, chart_overlays, format_store, cond_fmt_rules, freeze_cols, freeze_rows, hide_gridlines };
+		const smart_lookups = board._applied_lookups?.length ? board._applied_lookups : null;
+		return { columns_config: root_columns_config, formula_columns, filters, sort_by, join_config, sheets, chart_overlays, format_store, cond_fmt_rules, freeze_cols, freeze_rows, hide_gridlines, smart_lookups };
 	}
 
 	// ── Restore state from config ─────────────────────────────────────────────
@@ -558,15 +571,15 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 		const regular_fieldnames = (config.columns_config || [])
 			.filter(c => !c.is_formula_col)
 			.flatMap(c => c.is_meta_col ? META_AUDIT_FIELDS : [c.fieldname])
-			.filter(Boolean);
+			.filter(f => f && !String(f).startsWith("_slk_") && !String(f).startsWith("_join_"));
 
 		if (regular_fieldnames.length) {
 			board.apply_field_selection(regular_fieldnames, { silent: true });
 		}
 
-		// Re-inject meta column if the saved config had one
+		// apply_field_selection already called _inject_meta_column() internally.
+		// Only sync HOT columns if meta was present (widths may have changed).
 		if (has_meta_col) {
-			board._inject_meta_column();
 			board.hot.updateSettings({ columns: board.columns });
 		}
 
@@ -718,6 +731,14 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 			setTimeout(() => board.hot?.render(), 150);
 		}
 
+		// ── 11. Restore Smart Lookup configs (V3.2) ────────────────────────────────
+		if (Array.isArray(config.smart_lookups) && config.smart_lookups.length) {
+			board._applied_lookups = config.smart_lookups;
+			frappe.model.user_settings.save(board.doctype, "excel_smart_lookups", board._applied_lookups);
+			// Re-run joins after sheets + data are loaded (sheets restore at t=50ms)
+			setTimeout(() => board._reapply_smart_lookups?.(), 300);
+		}
+
 		// ── 10. Restore View tab state (V2.6) ──────────────────────────────────────
 		if (config.freeze_cols > 0) {
 			setTimeout(() => board._set_freeze?.(config.freeze_cols), 50);
@@ -780,17 +801,27 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 		this._current = null;
 		const dt = board.doctype;
 		const cleared = Object.assign({}, frappe.model.user_settings[dt] || {}, {
+			// Workbook identity
 			excel_current_workbook: null,
+			// Grid state
+			excel_columns:          null,
+			excel_ct_columns:       null,
+			excel_hidden_cols:      null,
+			excel_hidden_rows:      [],
+			excel_row_heights:      [],
+			// Formatting / CF
 			excel_format_store:     null,
 			excel_cf_rules:         null,
+			// View settings
 			excel_view_freeze:      0,
 			excel_view_freeze_rows: 0,
 			excel_hide_gridlines:   false,
+			excel_focus_cell:       null,
+			// Overlays
 			excel_chart_overlays:   [],
-			// V3.1 — clear hidden rows, row heights, and column widths on deselect
-			excel_hidden_rows:      [],
-			excel_row_heights:      [],
-			excel_columns:          null,
+			// Multi-sheet + Smart Lookup (V3.2)
+			excel_sheets:           null,
+			excel_smart_lookups:    null,
 		});
 		frappe.model.user_settings[dt] = cleared; // commit synchronous clear
 

@@ -495,6 +495,54 @@ class FrappeFunctionPlugin extends FunctionPlugin {
 			},
 		);
 	}
+
+	// ── SMART_LOOKUP ─────────────────────────────────────────────────────────────────────
+	// SMART_LOOKUP(lookup_value, target_doctype, return_field [, source_doctype])
+	//
+	// Traverses the Frappe schema graph to resolve the relationship and fetch
+	// a field from a related DocType — no manual VLOOKUP range required.
+	//
+	// Strategy 1: lookup_value matches target_doctype’s `name` field directly.
+	// Strategy 2: target_doctype has a Link field back to source_doctype;
+	//             fetches the most-recent matching row.
+	//
+	// Examples:
+	//   =SMART_LOOKUP(A2,"Customer","customer_group")
+	//   =SMART_LOOKUP(B5,"Sales Order","grand_total","Customer")
+
+	smart_lookup(ast, state) {
+		return this.runFunction(
+			ast.args,
+			state,
+			this.metadata("SMART_LOOKUP"),
+			(lookup_value, target_doctype, return_field, source_doctype) => {
+				const lv  = _s(lookup_value);
+				const tdt = _s(target_doctype);
+				const rf  = _s(return_field);
+				const sdt = _s(source_doctype) || "";
+
+				if (!lv || !tdt || !rf) return "#ARG!";
+
+				const key = `SMART_LOOKUP:${tdt}:${rf}:${sdt}:${lv}`;
+				return this._fm.getOrFetch(
+					key,
+					() =>
+						frappe
+							.call({
+								method: "excel_view.api.smart_lookup_fetch",
+								args:   {
+									lookup_value:   lv,
+									target_doctype: tdt,
+									return_field:   rf,
+									source_doctype: sdt,
+								},
+							})
+							.then((r) => r.message ?? ""),
+					state.formulaAddress,
+				);
+			},
+		);
+	}
 }
 
 // ── Argument type shorthands ──────────────────────────────────────────────────
@@ -540,6 +588,12 @@ FrappeFunctionPlugin.implementedFunctions = {
 	ITEM_PRICE: {
 		method:     "item_price",
 		parameters: [_S, _S, _Nn, _Sn, _Sn],
+	},
+	// V3.2 — Graph-aware cross-doctype lookup (no manual range required)
+	SMART_LOOKUP: {
+		method:     "smart_lookup",
+		// lookup_value, target_doctype, return_field [, source_doctype]
+		parameters: [_S, _S, _S, _Sn],
 	},
 };
 

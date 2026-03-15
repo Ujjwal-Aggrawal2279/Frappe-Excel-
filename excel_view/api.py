@@ -2956,3 +2956,835 @@ def genbi_chat(query: str, session_id: str, base_doctype: str) -> dict:
 	}
 
 
+# ── V3.2 Get Data — External Sources ──────────────────────────────────────────
+
+
+def _csv_to_headers_rows(text: str):
+	"""Parse CSV text → {"headers": [...], "rows": [[...]]}."""
+	import csv, io
+
+	reader = csv.reader(io.StringIO(text))
+	all_rows = list(reader)
+	if not all_rows:
+		return {"headers": [], "rows": []}
+	return {"headers": all_rows[0], "rows": all_rows[1:]}
+
+
+@frappe.whitelist()
+def fetch_google_sheet(url: str, tab_name: str = ""):
+	"""Fetch a public Google Sheet by URL and return headers + rows.
+
+	Uses the CSV export endpoint — no API key needed for sheets shared
+	as "Anyone with link can view".
+	"""
+	import re, requests
+
+	match = re.search(r"/spreadsheets/d/([a-zA-Z0-9_-]+)", url)
+	if not match:
+		return {"error": "Invalid Google Sheets URL — could not find spreadsheet ID."}
+
+	sheet_id = match.group(1)
+	export_url = f"https://docs.google.com/spreadsheets/d/{sheet_id}/export?format=csv"
+	if tab_name:
+		from urllib.parse import quote
+		export_url += f"&sheet={quote(tab_name)}"
+
+	try:
+		resp = requests.get(export_url, timeout=20, allow_redirects=True)
+		resp.raise_for_status()
+		ct = resp.headers.get("content-type", "")
+		if "text/html" in ct:
+			return {"error": "Could not access sheet. Ensure it is shared as 'Anyone with link can view'."}
+		return _csv_to_headers_rows(resp.text)
+	except Exception as e:
+		return {"error": str(e)}
+
+
+@frappe.whitelist()
+def fetch_url_text(url: str):
+	"""Return raw text content of any URL (used by CSV / JSON import)."""
+	import requests
+
+	try:
+		resp = requests.get(url, timeout=20)
+		resp.raise_for_status()
+		return {"text": resp.text}
+	except Exception as e:
+		return {"error": str(e)}
+
+
+@frappe.whitelist()
+def fetch_web_api(url: str, method: str = "GET", headers: str = "", json_path: str = ""):
+	"""Call a REST endpoint and normalise the JSON response to headers + rows.
+
+	Args:
+		url:        Endpoint URL.
+		method:     HTTP method (GET / POST).
+		headers:    JSON-encoded dict of request headers.
+		json_path:  Dot-notation path into the JSON response (e.g. "data.items").
+	"""
+	import json, requests
+
+	hdrs: dict = {}
+	if headers:
+		try:
+			hdrs = json.loads(headers) if isinstance(headers, str) else dict(headers)
+		except Exception:
+			pass
+
+	try:
+		fn = getattr(requests, method.lower(), requests.get)
+		resp = fn(url, headers=hdrs, timeout=25)
+		resp.raise_for_status()
+		data = resp.json()
+	except Exception as e:
+		return {"error": str(e)}
+
+	# Traverse dot-notation path
+	if json_path:
+		for key in json_path.split("."):
+			if isinstance(data, dict):
+				data = data.get(key)
+			elif isinstance(data, list) and key.isdigit():
+				data = data[int(key)]
+			else:
+				data = None
+			if data is None:
+				return {"error": f"Path '{json_path}' not found in the response."}
+
+	if not isinstance(data, list):
+		data = [data] if isinstance(data, dict) else []
+	if not data:
+		return {"headers": [], "rows": []}
+
+	first = data[0]
+	col_keys: list = list(first.keys()) if isinstance(first, dict) else [f"col{i}" for i in range(len(first))]
+	rows = []
+	for item in data:
+		if isinstance(item, dict):
+			rows.append([item.get(k, "") for k in col_keys])
+		elif isinstance(item, list):
+			rows.append(item)
+		else:
+			rows.append([item])
+
+	return {"headers": col_keys, "rows": rows}
+
+
+@frappe.whitelist()
+def extract_pdf_tables(pdf_b64: str):
+	"""Extract all tables from a base64-encoded PDF using pdfplumber.
+
+	Returns {"tables": [{"headers": [...], "rows": [[...], ...]}, ...]}.
+	"""
+	import base64, io
+
+	try:
+		import pdfplumber
+	except ImportError:
+		return {"error": "pdfplumber is not installed. Run: pip install pdfplumber"}
+
+	try:
+		pdf_bytes = base64.b64decode(pdf_b64)
+		tables = []
+		with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
+			for page in pdf.pages:
+				for tbl in (page.extract_tables() or []):
+					if not tbl:
+						continue
+					headers = [str(c or f"Col{i + 1}") for i, c in enumerate(tbl[0])]
+					rows = [[str(cell or "") for cell in row] for row in tbl[1:]]
+					if rows:
+						tables.append({"headers": headers, "rows": rows})
+		return {"tables": tables}
+	except Exception as e:
+		return {"error": str(e)}
+
+
+
+
+# ── Field-type compatibility helpers ─────────────────────────────────────────
+
+_NUMERIC_FT: frozenset = frozenset({"Currency", "Float", "Int", "Percent"})
+_TEXT_FT: frozenset    = frozenset({"Data", "Link", "Select", "Small Text", "Text", "Long Text"})
+_DATE_FT: frozenset    = frozenset({"Date", "Datetime", "Time"})
+
+
+def _field_type_compat(ft1: str, ft2: str) -> float:
+	"""Confidence multiplier when fieldtypes differ.  1.0 = perfect, 0.65 = incompatible."""
+	if not ft1 or not ft2:
+		return 1.0
+	if ft1 == ft2:
+		return 1.0
+	if ft1 in _NUMERIC_FT and ft2 in _NUMERIC_FT:
+		return 1.0
+	if ft1 in _TEXT_FT and ft2 in _TEXT_FT:
+		return 0.95
+	if ft1 in _DATE_FT and ft2 in _DATE_FT:
+		return 0.95
+	return 0.65  # incompatible types (e.g. Currency ↔ Link)
+
+
+@frappe.whitelist()
+def smart_lookup_suggest(
+	source_doctype: str,
+	target_doctype: str,
+	source_headers: str,
+	target_headers: str,
+	source_sample: str = "[]",
+	target_sample: str = "[]",
+):
+	"""AI-based 4-layer join column suggestion (no LLM).
+
+	Layer 0: Primary Key Match — ≥50 % of source-col values are found as `name` IDs
+	         in the target sample (foreign-key / primary-key detection).
+	Layer 1: Frappe meta — Link fields on source DocType pointing to target DocType.
+	Layer 2a: Exact fieldname match.
+	Layer 2b: Fuzzy label / fieldname similarity (rapidfuzz token_sort_ratio).
+	Layer 3: Data-content match — Polars-accelerated Jaccard similarity on sampled
+	         unique values (Python-set fallback when Polars unavailable).
+
+	Data-type guardrails: confidence is multiplied by a compatibility factor when
+	source and target fieldtypes are semantically incompatible (e.g. Float ↔ Link).
+
+	Returns: list of {source_col, target_col, strategy, confidence, reason}
+	sorted by confidence descending, one card per (unclaimed) source column.
+	"""
+	import json
+	from rapidfuzz import fuzz
+
+	try:
+		import polars as pl
+		_USE_POLARS = True
+	except ImportError:
+		_USE_POLARS = False
+
+	src_headers = json.loads(source_headers)   # [{fieldname, label, fieldtype, options}, …]
+	tgt_headers = json.loads(target_headers)
+	src_sample  = json.loads(source_sample)    # [[val, …], …]  ≤ 200 rows
+	tgt_sample  = json.loads(target_sample)
+
+	suggestions: list  = []
+	claimed_src: set   = set()
+	claimed_tgt: set   = set()
+
+	# ── Layer 1: Frappe meta — Link fields pointing to target DocType ──────────
+	if source_doctype and target_doctype:
+		try:
+			src_meta = frappe.get_meta(source_doctype)
+			for df in src_meta.fields:
+				if df.fieldtype == "Link" and df.options == target_doctype:
+					if df.fieldname not in claimed_src:
+						suggestions.append({
+							"source_col": df.fieldname,
+							"target_col": "name",
+							"strategy":   "link_field",
+							"confidence": 0.97,
+							"reason":     (
+								f"'{df.label or df.fieldname}' is a Link field to {target_doctype}"
+							),
+						})
+						claimed_src.add(df.fieldname)
+						claimed_tgt.add("name")
+		except Exception:
+			frappe.clear_messages()
+
+	# ── Layer 2a: Exact fieldname match (runs BEFORE Primary Key Match) ────────
+	# Structural equality trumps data-based heuristics.
+	claimed_src_l2 = {s["source_col"] for s in suggestions}
+	claimed_tgt_l2 = {s["target_col"] for s in suggestions}
+
+	for sf in src_headers:
+		if sf["fieldname"] in claimed_src_l2:
+			continue
+		for tf in tgt_headers:
+			if tf["fieldname"] in claimed_tgt_l2:
+				continue
+			if sf["fieldname"] == tf["fieldname"]:
+				compat = _field_type_compat(sf.get("fieldtype", ""), tf.get("fieldtype", ""))
+				suggestions.append({
+					"source_col": sf["fieldname"],
+					"target_col": tf["fieldname"],
+					"strategy":   "header_match",
+					"confidence": round(0.98 * compat, 3),
+					"reason":     f"Exact fieldname match: '{sf['fieldname']}'",
+				})
+				claimed_src_l2.add(sf["fieldname"])
+				claimed_tgt_l2.add(tf["fieldname"])
+				break
+
+	# Merge back before Layer 0 so it respects exact-fieldname claims
+	claimed_src = {s["source_col"] for s in suggestions}
+	claimed_tgt = {s["target_col"] for s in suggestions}
+
+	# ── Layer 0a: Primary Key Match — source values → target `name` column ─────
+	# Skip source columns that already matched via exact fieldname (Layer 2a).
+	if src_sample and tgt_sample:
+		name_ti = next(
+			(i for i, tf in enumerate(tgt_headers) if tf["fieldname"] == "name"), None
+		)
+		if name_ti is not None and "name" not in claimed_tgt:
+			tgt_names_raw = [
+				str(r[name_ti])
+				for r in tgt_sample
+				if name_ti < len(r) and str(r[name_ti]).strip()
+			]
+			if tgt_names_raw:
+				tgt_name_set = set(tgt_names_raw)
+				if _USE_POLARS:
+					tgt_name_pl = pl.Series(tgt_names_raw).unique()
+
+				for si, sf in enumerate(src_headers):
+					if sf["fieldname"] in claimed_src:
+						continue
+					src_raw = [
+						str(r[si]) for r in src_sample if si < len(r) and str(r[si]).strip()
+					]
+					if not src_raw:
+						continue
+
+					if _USE_POLARS:
+						src_pl  = pl.Series(src_raw).unique()
+						overlap = int(src_pl.is_in(tgt_name_pl).sum())
+						total   = len(src_pl)
+					else:
+						src_set = set(src_raw)
+						overlap = len(src_set & tgt_name_set)
+						total   = len(src_set)
+
+					if total == 0:
+						continue
+					ratio = overlap / total
+					if ratio >= 0.5:
+						src_set_py = set(src_raw)
+						union      = len(src_set_py | tgt_name_set)
+						jaccard    = overlap / union if union else 0.0
+						confidence = round(min(0.99, 0.85 + jaccard * 0.14), 3)
+						suggestions.append({
+							"source_col": sf["fieldname"],
+							"target_col": "name",
+							"strategy":   "primary_key_match",
+							"confidence": confidence,
+							"reason":     (
+								f"{overlap}/{total} source values match target IDs "
+								f"({int(ratio * 100)}% hit-rate)"
+							),
+						})
+						claimed_src.add(sf["fieldname"])
+						claimed_tgt.add("name")
+						break
+
+	# ── Layer 0b: Source `name` (ID) values → any unclaimed target column ──────
+	# Covers doctype→report joins where the report stores IDs in a non-`name` col
+	# (e.g. Customer.name = "CUST-001" appears in Report.customer_name column).
+	if src_sample and tgt_sample and "name" not in claimed_src:
+		src_name_si = next(
+			(i for i, sf in enumerate(src_headers) if sf["fieldname"] == "name"), None
+		)
+		if src_name_si is not None:
+			src_raw = [
+				str(r[src_name_si])
+				for r in src_sample
+				if src_name_si < len(r) and str(r[src_name_si]).strip()
+			]
+			if src_raw:
+				src_set = set(src_raw)
+				best_j, best_tf, best_cnt = 0.0, None, 0
+				for ti, tf in enumerate(tgt_headers):
+					# Layer 0b intentionally ignores claimed_tgt:
+					# `name → FK` is a distinct join pattern; multiple source columns
+					# pointing to the same target is fine — user picks which to apply.
+					if tf["fieldname"] == "name":
+						continue
+					tgt_raw = [
+						str(r[ti])
+						for r in tgt_sample
+						if ti < len(r) and str(r[ti]).strip()
+					]
+					if not tgt_raw:
+						continue
+					tgt_set = set(tgt_raw)
+					inter   = len(src_set & tgt_set)
+					ratio   = inter / len(src_set) if src_set else 0.0
+					if ratio >= 0.5 and ratio > best_j:
+						best_j, best_tf, best_cnt = ratio, tf, inter
+
+				if best_tf:
+					best_ti_idx = next(i for i, tf in enumerate(tgt_headers) if tf is best_tf)
+					best_tgt_set = set(
+						str(r[best_ti_idx])
+						for r in tgt_sample
+						if best_ti_idx < len(r) and str(r[best_ti_idx]).strip()
+					)
+					union   = len(src_set | best_tgt_set)
+					jaccard = best_cnt / union if union else 0.0
+					suggestions.append({
+						"source_col": "name",
+						"target_col": best_tf["fieldname"],
+						"strategy":   "primary_key_match",
+						"confidence": round(min(0.96, 0.82 + best_j * 0.14), 3),
+						"reason":     (
+							f"{best_cnt}/{len(src_set)} source IDs match "
+							f"'{best_tf.get('label') or best_tf['fieldname']}' values "
+							f"({int(best_j * 100)}% hit-rate)"
+						),
+					})
+					claimed_src.add("name")
+					claimed_tgt.add(best_tf["fieldname"])
+
+	# ── Layer 2b: Fuzzy label + fieldname similarity ───────────────────────────
+	claimed_src_l2 = {s["source_col"] for s in suggestions}
+	claimed_tgt_l2 = {s["target_col"] for s in suggestions}
+
+	for sf in src_headers:
+		if sf["fieldname"] in claimed_src_l2:
+			continue
+		best_score, best_tf = 0, None
+		for tf in tgt_headers:
+			if tf["fieldname"] in claimed_tgt_l2:
+				continue
+			src_label  = (sf.get("label") or sf["fieldname"]).lower()
+			tgt_label  = (tf.get("label") or tf["fieldname"]).lower()
+			lbl_score  = fuzz.token_sort_ratio(src_label, tgt_label)
+			fn_score   = fuzz.ratio(
+				sf["fieldname"].replace("_", " "),
+				tf["fieldname"].replace("_", " "),
+			)
+			score = max(lbl_score, fn_score)
+			if score > best_score:
+				best_score, best_tf = score, tf
+		if best_tf and best_score >= 75:
+			compat = _field_type_compat(sf.get("fieldtype", ""), best_tf.get("fieldtype", ""))
+			suggestions.append({
+				"source_col": sf["fieldname"],
+				"target_col": best_tf["fieldname"],
+				"strategy":   "header_match",
+				"confidence": round((best_score / 100) * compat, 3),
+				"reason":     (
+					f"'{sf.get('label') or sf['fieldname']}' ≈ "
+					f"'{best_tf.get('label') or best_tf['fieldname']}' "
+					f"({best_score}% similarity)"
+				),
+			})
+			claimed_src_l2.add(sf["fieldname"])
+			claimed_tgt_l2.add(best_tf["fieldname"])
+
+	# Merge back
+	claimed_src = {s["source_col"] for s in suggestions}
+	claimed_tgt = {s["target_col"] for s in suggestions}
+
+	# ── Layer 3: Data-content match (Polars Jaccard) ───────────────────────────
+	if src_sample and tgt_sample:
+		for si, sf in enumerate(src_headers):
+			if sf["fieldname"] in claimed_src:
+				continue
+			src_raw = [
+				str(r[si]) for r in src_sample if si < len(r) and str(r[si]).strip()
+			]
+			if not src_raw:
+				continue
+
+			best_j, best_tf, best_cnt = 0.0, None, 0
+			for ti, tf in enumerate(tgt_headers):
+				if tf["fieldname"] in claimed_tgt:
+					continue
+				tgt_raw = [
+					str(r[ti]) for r in tgt_sample if ti < len(r) and str(r[ti]).strip()
+				]
+				if not tgt_raw:
+					continue
+
+				if _USE_POLARS:
+					src_set = set(pl.Series(src_raw).unique().to_list())
+					tgt_set = set(pl.Series(tgt_raw).unique().to_list())
+				else:
+					src_set = set(src_raw)
+					tgt_set = set(tgt_raw)
+
+				inter = len(src_set & tgt_set)
+				union = len(src_set | tgt_set)
+				j     = inter / union if union else 0.0
+				if j > best_j:
+					best_j, best_tf, best_cnt = j, tf, inter
+
+			if best_tf and best_j >= 0.2:
+				compat = _field_type_compat(sf.get("fieldtype", ""), best_tf.get("fieldtype", ""))
+				suggestions.append({
+					"source_col": sf["fieldname"],
+					"target_col": best_tf["fieldname"],
+					"strategy":   "data_content_match",
+					"confidence": round(best_j * compat, 3),
+					"reason":     (
+						f"{best_cnt} shared unique values "
+						f"({int(best_j * 100)}% Jaccard overlap)"
+					),
+				})
+				claimed_src.add(sf["fieldname"])
+				claimed_tgt.add(best_tf["fieldname"])
+
+	suggestions.sort(key=lambda x: -x["confidence"])
+	seen, result = set(), []
+	for s in suggestions:
+		if s["source_col"] not in seen:
+			seen.add(s["source_col"])
+			result.append(s)
+
+	return result
+
+
+# ── Schema graph & relational auto-expansion ──────────────────────────────────
+
+@frappe.whitelist()
+def build_schema_graph(force_refresh: bool = False) -> dict:
+	"""Build a NetworkX DiGraph of all DocType → Link → DocType relationships.
+
+	Traverses frappe.get_meta() for every non-table, non-single DocType and maps
+	Link fields as directed edges: source_doctype → (fieldname) → target_doctype.
+
+	Cached in Redis for 1 hour under key "excel_view_schema_graph".
+
+	Returns:
+	  {
+	    nodes: [{id, module}],
+	    edges: [{source, target, fieldname, label}]
+	  }
+	"""
+	import networkx as nx
+
+	_cache_key = "excel_view_schema_graph"
+	if not frappe.parse_json(force_refresh):
+		cached = frappe.cache().get_value(_cache_key)
+		if cached:
+			return cached
+
+	G: nx.DiGraph = nx.DiGraph()
+
+	doctypes = frappe.db.get_all(
+		"DocType",
+		filters={"istable": 0, "issingle": 0},
+		fields=["name", "module"],
+		limit=1000,
+	)
+	for dt in doctypes:
+		G.add_node(dt.name, module=dt.module or "")
+
+	for dt in doctypes:
+		try:
+			meta = frappe.get_meta(dt.name)
+			for df in meta.fields:
+				if df.fieldtype == "Link" and df.options and G.has_node(df.options):
+					G.add_edge(
+						dt.name,
+						df.options,
+						fieldname=df.fieldname,
+						label=df.label or df.fieldname,
+					)
+		except Exception:
+			frappe.clear_messages()
+			continue
+
+	result = {
+		"nodes": [
+			{"id": n, "module": data.get("module", "")}
+			for n, data in G.nodes(data=True)
+		],
+		"edges": [
+			{
+				"source":    u,
+				"target":    v,
+				"fieldname": data.get("fieldname", ""),
+				"label":     data.get("label", ""),
+			}
+			for u, v, data in G.edges(data=True)
+		],
+	}
+	frappe.cache().set_value(_cache_key, result, expires_in_sec=3600)
+	return result
+
+
+@frappe.whitelist()
+def find_related_doctypes(source_doctype: str, max_hops: int = 2) -> list:
+	"""Return DocTypes reachable from *source_doctype* within *max_hops* in the schema graph.
+
+	For each related DocType returns:
+	  {doctype, cardinality, join_field, join_label, hops[, via]}
+	  cardinality: "N:1" (source has Link to target) | "1:N" (target links back to source).
+
+	Results capped at 30 entries, sorted by hop count.
+	"""
+	import networkx as nx
+
+	if not source_doctype:
+		return []
+
+	graph_data = build_schema_graph()
+	G: nx.DiGraph = nx.DiGraph()
+	for node in graph_data.get("nodes", []):
+		G.add_node(node["id"], module=node.get("module", ""))
+	for edge in graph_data.get("edges", []):
+		G.add_edge(
+			edge["source"], edge["target"],
+			fieldname=edge.get("fieldname", ""),
+			label=edge.get("label", ""),
+		)
+
+	if source_doctype not in G:
+		return []
+
+	result  = []
+	visited = {source_doctype}
+
+	# 1-hop N:1: source has a Link field pointing to target
+	for tgt in G.successors(source_doctype):
+		ed = G.get_edge_data(source_doctype, tgt) or {}
+		result.append({
+			"doctype":     tgt,
+			"cardinality": "N:1",
+			"join_field":  ed.get("fieldname", ""),
+			"join_label":  ed.get("label", ""),
+			"hops":        1,
+		})
+		visited.add(tgt)
+
+	# 1-hop 1:N: other doctypes that have a Link field pointing TO source
+	for src_node in list(G.nodes()):
+		if src_node == source_doctype or src_node in visited:
+			continue
+		if G.has_edge(src_node, source_doctype):
+			ed = G.get_edge_data(src_node, source_doctype) or {}
+			result.append({
+				"doctype":     src_node,
+				"cardinality": "1:N",
+				"join_field":  ed.get("fieldname", ""),
+				"join_label":  ed.get("label", ""),
+				"hops":        1,
+			})
+			visited.add(src_node)
+
+	# 2-hop (optional): neighbours of N:1 neighbours
+	if int(max_hops) >= 2:
+		one_hop_n1 = [r for r in result if r["hops"] == 1 and r["cardinality"] == "N:1"]
+		for hop1 in one_hop_n1:
+			inter = hop1["doctype"]
+			for tgt2 in G.successors(inter):
+				if tgt2 in visited:
+					continue
+				ed = G.get_edge_data(inter, tgt2) or {}
+				result.append({
+					"doctype":     tgt2,
+					"cardinality": "N:1",
+					"join_field":  hop1["join_field"],
+					"join_label":  hop1["join_label"],
+					"via":         inter,
+					"hops":        2,
+				})
+				visited.add(tgt2)
+
+	result.sort(key=lambda x: x["hops"])
+	return result[:30]
+
+
+@frappe.whitelist()
+def expand_relationship(
+	source_doctype: str,
+	target_doctype: str,
+	join_field: str,
+	source_values: str,
+	agg_preset: str = "latest",
+	return_fields: str = "[]",
+) -> dict:
+	"""Fetch related rows from *target_doctype* for the given *source_values*.
+
+	Handles two cardinalities automatically:
+	  N:1 — join_field is on source side; target's `name` is the match key.
+	  1:N — target has a Link field pointing back to source_doctype.
+
+	agg_preset: "latest" | "sum" | "count" | "average"
+	source_values: JSON list of join-key values from the source sheet (≤ 500).
+	return_fields: JSON list of fieldnames to pull (auto-selected if empty).
+
+	Uses Polars when available for sub-500 ms processing at 100k-row scale.
+
+	Returns: {columns, rows, cardinality, agg_preset} | {error, columns, rows}
+	"""
+	import json
+
+	_check_doctype_permission(source_doctype)
+	_check_doctype_permission(target_doctype)
+
+	values        = [str(v) for v in json.loads(source_values) if v]
+	fields_wanted = json.loads(return_fields)
+	if not values:
+		return {"columns": [], "rows": [], "cardinality": "unknown"}
+
+	try:
+		import polars as pl
+		_USE_POLARS = True
+	except ImportError:
+		_USE_POLARS = False
+
+	tgt_meta = frappe.get_meta(target_doctype)
+	col_label = {df.fieldname: (df.label or df.fieldname) for df in tgt_meta.fields}
+
+	# Auto-detect cardinality: does target have a Link field back to source?
+	reverse_field = next(
+		(df.fieldname for df in tgt_meta.fields
+		 if df.fieldtype == "Link" and df.options == source_doctype),
+		None,
+	)
+	cardinality = "1:N" if reverse_field else "N:1"
+
+	# Auto-select return fields when not specified
+	if not fields_wanted:
+		fields_wanted = [
+			df.fieldname for df in tgt_meta.fields
+			if df.fieldtype in ("Currency", "Float", "Int", "Data", "Link", "Select")
+			and not df.hidden and getattr(df, "in_list_view", 0)
+		][:6]
+	if not fields_wanted:
+		fields_wanted = [
+			df.fieldname for df in tgt_meta.fields
+			if df.fieldtype in ("Currency", "Float", "Int") and not df.hidden
+		][:5]
+
+	placeholders = ", ".join(["%s"] * len(values))
+
+	try:
+		# ── 1:N aggregation presets ────────────────────────────────────────────
+		if cardinality == "1:N" and agg_preset in ("count", "sum", "average"):
+			numeric_fields = [
+				df.fieldname for df in tgt_meta.fields
+				if df.fieldtype in ("Currency", "Float", "Int") and not df.hidden
+				and (not fields_wanted or df.fieldname in fields_wanted)
+			][:5]
+
+			if agg_preset == "count":
+				sql = f"""
+					SELECT `{reverse_field}` AS _src_key, COUNT(name) AS `count`
+					FROM `tab{target_doctype}`
+					WHERE `{reverse_field}` IN ({placeholders}) AND docstatus < 2
+					GROUP BY `{reverse_field}`
+				"""
+				rows = frappe.db.sql(sql, values, as_dict=True)
+				return {
+					"columns": [
+						{"fieldname": "_src_key", "label": source_doctype},
+						{"fieldname": "count",    "label": f"Count of {target_doctype}"},
+					],
+					"rows":        rows,
+					"cardinality": cardinality,
+					"agg_preset":  agg_preset,
+				}
+
+			if numeric_fields:
+				pfx = "sum_" if agg_preset == "sum" else "avg_"
+				fn  = "SUM" if agg_preset == "sum" else "AVG"
+				agg_expr = ", ".join(f"{fn}(`{f}`) AS `{pfx}{f}`" for f in numeric_fields)
+				sql = f"""
+					SELECT `{reverse_field}` AS _src_key, {agg_expr}
+					FROM `tab{target_doctype}`
+					WHERE `{reverse_field}` IN ({placeholders}) AND docstatus < 2
+					GROUP BY `{reverse_field}`
+				"""
+				rows = frappe.db.sql(sql, values, as_dict=True)
+				return {
+					"columns": [
+						{"fieldname": "_src_key", "label": source_doctype},
+					] + [
+						{"fieldname": f"{pfx}{f}", "label": f"{agg_preset.title()} {col_label.get(f, f)}"}
+						for f in numeric_fields
+					],
+					"rows":        rows,
+					"cardinality": cardinality,
+					"agg_preset":  agg_preset,
+				}
+
+		# ── N:1 or 1:N "latest" — row-level fetch ─────────────────────────────
+		fld_sql  = ", ".join(f"`{f}`" for f in fields_wanted) if fields_wanted else "name"
+		join_col = reverse_field if cardinality == "1:N" else "name"
+		sql = f"""
+			SELECT `{join_col}` AS _src_key, {fld_sql}
+			FROM `tab{target_doctype}`
+			WHERE `{join_col}` IN ({placeholders}) AND docstatus < 2
+			ORDER BY modified DESC
+		"""
+		rows = frappe.db.sql(sql, values, as_dict=True)
+
+		# For 1:N "latest": keep only the most-recent row per source key
+		if agg_preset == "latest" and cardinality == "1:N":
+			seen_keys: set = set()
+			deduped = []
+			for row in rows:
+				k = row.get("_src_key")
+				if k not in seen_keys:
+					seen_keys.add(k)
+					deduped.append(row)
+			rows = deduped
+
+		# Polars round-trip — validates types and normalises nulls
+		if _USE_POLARS and rows:
+			rows = pl.from_dicts(rows).to_dicts()
+
+		return {
+			"columns": [{"fieldname": "_src_key", "label": join_field}] + [
+				{"fieldname": f, "label": col_label.get(f, f)}
+				for f in fields_wanted
+			],
+			"rows":        rows,
+			"cardinality": cardinality,
+			"agg_preset":  agg_preset,
+		}
+
+	except Exception as e:
+		frappe.log_error(frappe.get_traceback(), "expand_relationship error")
+		return {"error": str(e), "columns": [], "rows": []}
+
+
+@frappe.whitelist()
+def smart_lookup_fetch(
+	lookup_value: str,
+	target_doctype: str,
+	return_field: str,
+	source_doctype: str = "",
+) -> str:
+	"""Scalar lookup powering the SMART_LOOKUP() HyperFormula formula.
+
+	Strategy 1: Direct name lookup — frappe.db.get_value(target_doctype, lookup_value, field).
+	Strategy 2: Reverse Link — find a Link field on target pointing to source_doctype,
+	            then filter by that field.
+
+	Returns "" when no match is found.  Always returns a string.
+	"""
+	if not lookup_value or not target_doctype or not return_field:
+		return ""
+
+	_check_doctype_permission(target_doctype)
+	_validate_fieldname(target_doctype, return_field)
+
+	# Strategy 1: lookup_value is the `name` (ID) in target_doctype
+	try:
+		val = frappe.db.get_value(target_doctype, str(lookup_value), return_field)
+		if val is not None:
+			return str(val)
+	except Exception:
+		pass
+
+	# Strategy 2: target has a Link field back to source_doctype
+	if source_doctype:
+		try:
+			tgt_meta = frappe.get_meta(target_doctype)
+			for df in tgt_meta.fields:
+				if df.fieldtype == "Link" and df.options == source_doctype:
+					val = frappe.db.get_value(
+						target_doctype,
+						{df.fieldname: str(lookup_value)},
+						return_field,
+						order_by="modified desc",
+					)
+					if val is not None:
+						return str(val)
+					break
+		except Exception:
+			pass
+
+	return ""

@@ -45,6 +45,8 @@ Works on **vanilla Frappe** and optionally unlocks ERPNext-specific formula func
 - **Formula Precedent Highlighting** — Select a formula cell → all dependency cells get a green outline using HyperFormula's dependency graph
 - **Created / Updated Meta Column** — The 4 Frappe audit fields (owner, creation, modified_by, modified) are automatically grouped into one compact visual column with avatars, CR/MD badges, and dates
 - **Full Format Persistence** — All Home tab formatting, column widths, row heights, and hidden rows survive page refresh (user_settings) and are saved/restored via workbook "Save View"
+- **Report Filter Bar** — Load any Frappe Script/Query Report via Data → Get Data → From Reports; a live filter bar appears above the grid with fieldtype-aware Frappe controls (Link with autocomplete, Date picker, Select dropdown, DateRange as two pickers); Refresh re-runs the report with updated filters; report metadata persisted in workbook
+- **Smart Lookup** — Data tab → Smart Lookup; 3-layer join column detection (Layer 1: Frappe meta Link fields → Layer 2: fuzzy header match via rapidfuzz → Layer 3: Jaccard data overlap); works across any two sheets including report sheets; suggestion cards with confidence bars; Apply delegates to IntelliLookup flow
 
 ---
 
@@ -183,7 +185,37 @@ bench build --app excel_view   # required after every pull (dist files are not c
 
 ## Release Notes
 
-### v3.1 — Mar 2026 (Current)
+### v3.2 — Mar 2026 (Current, In Progress)
+
+**Zero-LLM Intelligence — Report Filter Bar + Smart Lookup**
+
+**Report Filter Bar**
+- Load any Frappe Script Report or Query Report via Data → Get Data → From Reports
+- A collapsible filter bar renders above the HOT grid with proper Frappe controls for each filter:
+  - Link fields → autocomplete with `get_query` / `filters` constraints from the report JS file respected
+  - Date → datepicker, DateRange → two date pickers side by side, Select → native dropdown
+- Refresh button re-runs the report with the current filter values via `frappe.desk.query_report.run`
+- Report name, filter definitions, and current filter values persisted in workbook serialize/restore
+- Filter bar collapses/expands via ▾/▸ toggle; autosaved per sheet
+- z-index fix: parent has no stacking context so `.awesomplete ul` (z-index 1100) floats above HOT grid headers
+
+**Smart Lookup (Data tab → Smart Lookup)**
+- 3-layer AI join column detection — zero LLM, entirely server-side:
+  - **Layer 1**: Frappe meta — `frappe.get_meta(doctype).fields` → Link fields pointing to the target DocType (confidence 0.97)
+  - **Layer 2**: Header fuzzy match — `rapidfuzz.fuzz.token_sort_ratio` on label/fieldname pairs (threshold ≥ 75%)
+  - **Layer 3**: Data value overlap — Jaccard similarity on sampled unique values per column pair (threshold ≥ 20%)
+- Works across any two sheets including report sheets (not just DocType sheets)
+- Suggestion cards show: strategy icon (🔗/🔤/📊), confidence %, source→target column, reason, color-coded bar
+- Apply → delegates to IntelliLookup column picker (reuses proven lookup flow)
+
+**Remaining V3.2 (next session)**
+- Flash Fill (Ctrl+E)
+- Formula Autodetect Ghost Text
+- `=DETECT_LANGUAGE()` / `=TRANSLATE()` HyperFormula functions
+
+---
+
+### v3.1 — Mar 2026
 
 **Grid Intelligence — Focus Cell, Hide Rows, Repeat Last Action, Precedents, Meta Column, Full Format Persistence**
 
@@ -489,7 +521,7 @@ bench build --app excel_view   # required after every pull (dist files are not c
 
 ## Upcoming
 
-### v3.2 — Zero-LLM Intelligence
+### v3.2 — Zero-LLM Intelligence (remaining)
 
 - **Flash Fill (Ctrl+E)** — auto-detect and fill patterns from 2+ examples (prefix/suffix stripping, delimiter split, case transform, regex extraction); server-side strategy engine in `api.py`
 - **Formula Autodetect / Ghost Text** — type `=` in a cell → header-aware ghost text suggests `=SUM(...)`, `=TEXT(...,"mmmm")`, etc.; Tab to accept
@@ -500,6 +532,7 @@ bench build --app excel_view   # required after every pull (dist files are not c
 
 - **Frappe-Native Validators** — `beforeChange` hook validates Currency/Float/Int (non-numeric → reverts), strips whitespace, checks Link field existence (red triangle indicator on invalid)
 - **Live Pivot Refresh** — Frappe SocketIO `list_update` event triggers debounced pivot recompute; pivot sheet updates in-place without losing filter state
+- **Smart Lookup N-hop** — NetworkX schema graph enhancement: Layer 1 extended to traverse multi-hop paths (Sales Invoice → Customer → Territory) using `nx.shortest_path`
 
 ### v3.4 — Agent Mode
 
@@ -521,6 +554,7 @@ bench build --app excel_view   # required after every pull (dist files are not c
 | Excel export/import | [ExcelJS](https://github.com/exceljs/exceljs) (lazy-loaded) |
 | CSV parsing | [PapaParse](https://www.papaparse.com/) |
 | ML | networkx, scikit-learn, rapidfuzz, mlxtend, scipy, pandas (all open-source, no LLMs) |
+| PDF parsing | pdfplumber (planned: Import from PDF) |
 
 ---
 

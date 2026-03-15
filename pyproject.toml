@@ -20,6 +20,7 @@ dependencies = [
     # Note: spaCy model (en_core_web_sm) is specified in requirements.txt as direct URL
     # This auto-installs during bench build/deployment without manual download
     "sentence-transformers>=2.2",
+    "pdfplumber>=0.10",
 ]
 
 [build-system]

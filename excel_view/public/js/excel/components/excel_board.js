@@ -44,15 +44,20 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this._has_unsaved_changes = false;
 		// Inline insert: index of the pending _is_new row (-1 = none)
 		this._new_row_idx = -1;
-		// V3.1 — Hidden rows (board-level array, HOT 6 uses updateSettings not getPlugin)
-		this._hidden_rows = [];
+		// V3.1 — Hidden rows (board-level Set, HOT 6 uses updateSettings not getPlugin)
+		this._hidden_rows = new Set();
 		// V3.1 — Focus Cell (crosshair)
 		this._focus_enabled = false;
 		this._focus_color = "#217346"; // Excel green default
+		this._focus_color_rgb = { r: 33, g: 115, b: 70 }; // cached parsed RGB (avoid per-cell parseInt)
 		this._focus_row = -1;
 		this._focus_col = -1;
 		// V3.1 — Formula Precedent Highlighting
 		this._precedent_cells = new Set();
+		// Perf: tree-child CF lookup (avoids O(n) findIndex per cell in afterRenderer)
+		this._tree_parent_map = null;
+		// Perf: meta-cell HTML cache (avoids repeated innerHTML builds + date parses)
+		this._meta_html_cache = new Map();
 		// V3.1 — Repeat Last Action (F4)
 		this._last_action = null;
 		this._setup();
@@ -145,9 +150,20 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		// apply display:none on the very first render (no setTimeout patch needed)
 		const _saved_hidden = frappe.get_user_settings(this.doctype)?.excel_hidden_rows;
 		if (Array.isArray(_saved_hidden) && _saved_hidden.length) {
-			this._hidden_rows = [..._saved_hidden];
+			this._hidden_rows = new Set(_saved_hidden);
 		}
 		this._init_hot();
+		// Restore hidden columns AFTER HOT init so _sync_visible_columns can call updateSettings
+		const _saved_hidden_cols = frappe.get_user_settings(this.doctype)?.excel_hidden_cols;
+		if (Array.isArray(_saved_hidden_cols) && _saved_hidden_cols.length) {
+			_saved_hidden_cols.forEach(key => this._hidden_col_keys.add(key));
+			this._sync_visible_columns();
+		}
+		// Restore Smart Lookup configs (column defs only — data re-joined after first refresh)
+		const _saved_slk = frappe.get_user_settings(this.doctype)?.excel_smart_lookups;
+		if (Array.isArray(_saved_slk) && _saved_slk.length) {
+			this._applied_lookups = _saved_slk;
+		}
 		// V3.1 — Restore manual row heights AFTER HOT init (plugin must exist)
 		const _saved_rh = frappe.get_user_settings(this.doctype)?.excel_row_heights;
 		if (Array.isArray(_saved_rh) && _saved_rh.some(h => h != null)) {
@@ -172,6 +188,16 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		// 6. Sheet tabs (V2.5) — setup after HOT and status bar exist
 		this.sheet_manager = new frappe.views.excel.SheetManager({ board: this });
 		this.sheet_manager.setup();
+		// Restore extra sheet tabs from user_settings (if no workbook is auto-loading).
+		// Workbook auto-restore happens at setTimeout(0) and will overwrite this if present.
+		{
+			const _us = frappe.get_user_settings(this.doctype) || {};
+			const _saved_sheets = _us.excel_sheets;
+			const _has_wb = !!_us.excel_current_workbook?.name;
+			if (!_has_wb && Array.isArray(_saved_sheets) && _saved_sheets.length > 1) {
+				setTimeout(() => this.sheet_manager?.restore(_saved_sheets), 0);
+			}
+		}
 
 		// 7. V2.6 — Load CF rules + format_store + gridlines from user_settings
 		const saved_cf = frappe.get_user_settings(this.doctype)?.excel_cf_rules;
@@ -242,12 +268,24 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this.$wrapper = $(this.wrapper);
 		this.$wrapper.empty().addClass("ev-grid-wrapper");
 
-		this.$hot_container = $('<div class="ev-hot-container">').appendTo(this.$wrapper);
+		// $grid_area — flex-ROW container: grid_main + right sidebar sit side by side.
+		// $wrapper stays flex-col so the sheet tab strip (appended later by sheet_manager)
+		// appears below the grid area as normal.
+		this.$grid_area = $('<div class="ev-grid-area">').appendTo(this.$wrapper);
+
+		// $grid_main — flex-col: HOT + status bar stack vertically, flex:1 in $grid_area.
+		this.$grid_main = $('<div class="ev-grid-main">').appendTo(this.$grid_area);
+
+		this.$hot_container = $('<div class="ev-hot-container">').appendTo(this.$grid_main);
 
 		// Status bar — fixed footer below the grid
-		this.$status_bar_container = $('<div class="ev-status-bar-container">').appendTo(this.$wrapper);
+		this.$status_bar_container = $('<div class="ev-status-bar-container">').appendTo(this.$grid_main);
 
-		// ResizeObserver — fires whenever the wrapper changes size (sidebar toggle,
+		// Right sidebar slot — used by Smart Lookup, Agent Mode, etc.
+		// Width transitions 0 → 300px; grid_main shrinks automatically (flex).
+		this.$right_sidebar = $('<div class="ev-right-sidebar">').appendTo(this.$grid_area);
+
+		// ResizeObserver — fires whenever $grid_main changes size (sidebar toggle,
 		// window resize, panel open/close). Debounced so rapid events don't pile up.
 		// Must also update HOT's height setting so scrollbars recalculate correctly.
 		this._resize_observer = new ResizeObserver(
@@ -258,7 +296,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 				this.hot.render();
 			}, 60)
 		);
-		this._resize_observer.observe(this.$wrapper[0]);
+		this._resize_observer.observe(this.$grid_main[0]);
 	}
 
 	_init_hot() {
@@ -276,7 +314,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			manualRowResize: true,
 			// V3.1 — rowHeights: 0 for hidden rows, 42px when meta col present, else 23px
 			rowHeights: (row) => {
-				if (this._hidden_rows?.includes(row)) return 0;
+				if (this._hidden_rows?.has(row)) return 0;
 				return this.columns?.some(c => c._is_meta_col) ? 42 : 23;
 			},
 			columnSorting: true,
@@ -359,14 +397,14 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			afterGetRowHeader: (row, TH) => {
 				// V3.1 — Hide row header TR for hidden rows (left clone overlay)
 				if (TH.parentNode) {
-					if (this._hidden_rows?.includes(row)) {
+					if (this._hidden_rows?.has(row)) {
 						TH.parentNode.style.cssText = "display:none!important;height:0!important;";
 					} else {
 						TH.parentNode.style.cssText = "";
 						// ▲ indicator: this row follows a hidden block
-						const prev_hidden = row > 0 && this._hidden_rows?.includes(row - 1);
+						const prev_hidden = row > 0 && this._hidden_rows?.has(row - 1);
 						// ▼ indicator: this row precedes a hidden block (next row is hidden)
-						const next_hidden = this._hidden_rows?.includes(row + 1);
+						const next_hidden = this._hidden_rows?.has(row + 1);
 						TH.classList.toggle("ev-unhide-indicator-top", !!prev_hidden);
 						TH.classList.toggle("ev-unhide-indicator-bottom", !!next_hidden);
 						// Inject/remove ▲ button (top — unhide block above)
@@ -608,10 +646,8 @@ frappe.views.ExcelBoard = class ExcelBoard {
 				if (col < minC || col > maxC) continue;
 				const row_data = this.list_view?.data?.[row];
 				if (row_data?._tree_is_child) {
-					// Use parent header's current HOT index for range check
-					const parent_idx = this.list_view.data.findIndex(
-						r => r._tree_is_header && r._tree_group_key === row_data._tree_group_key
-					);
+					// O(1) lookup via pre-built map (built in refresh, cleared on data change)
+					const parent_idx = this._tree_parent_map?.get(row_data._tree_group_key) ?? -1;
 					if (parent_idx < 0 || parent_idx < minR || parent_idx > maxR) continue;
 				} else if (row < minR || row > maxR) {
 					continue;
@@ -634,13 +670,13 @@ frappe.views.ExcelBoard = class ExcelBoard {
 
 		// V3.1 — Hide rows: collapse the TR for hidden rows (HOT 6.2.2 has no hiddenRows plugin)
 		if (TD.parentNode) {
-			if (this._hidden_rows?.includes(row)) {
+			if (this._hidden_rows?.has(row)) {
 				TD.parentNode.style.cssText = "display:none!important;height:0!important;";
 			} else {
 				if (TD.parentNode.style.display === "none") TD.parentNode.style.cssText = "";
 				// Green top-border indicator on the data row that follows a hidden block
 				if (col === 0) {
-					const after_hidden = row > 0 && this._hidden_rows?.includes(row - 1);
+					const after_hidden = row > 0 && this._hidden_rows?.has(row - 1);
 					TD.parentNode.classList.toggle("ev-after-hidden-row", after_hidden);
 				}
 			}
@@ -665,10 +701,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		const on_row = (row === this._focus_row);
 		const on_col = (col === this._focus_col);
 		if (!on_row && !on_col) return;
-		const hex = this._focus_color || "#217346";
-		const r = parseInt(hex.slice(1, 3), 16);
-		const g = parseInt(hex.slice(3, 5), 16);
-		const b = parseInt(hex.slice(5, 7), 16);
+		const { r, g, b } = this._focus_color_rgb || { r: 33, g: 115, b: 70 };
 		const alpha = (on_row && on_col) ? 0.38 : 0.18; // brighter: 18% row/col, 38% intersection
 		TD.style.setProperty("background-color", `rgba(${r},${g},${b},${alpha})`, "important");
 		TD.style.setProperty("background-image", "none", "important");
@@ -685,6 +718,9 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	// V3.1 — Set focus cell color
 	_set_focus_color(color) {
 		this._focus_color = color;
+		// Cache parsed RGB so afterRenderer doesn't parseInt on every cell
+		const hex = color || "#217346";
+		this._focus_color_rgb = { r: parseInt(hex.slice(1,3),16), g: parseInt(hex.slice(3,5),16), b: parseInt(hex.slice(5,7),16) };
 		if (this._focus_enabled) this.hot?.render();
 		frappe.model.user_settings.save(this.doctype, "excel_focus_cell",
 			{ enabled: this._focus_enabled, color: this._focus_color });
@@ -693,7 +729,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	// V3.1 — Hide rows (HOT 6.2.2 community: no hiddenRows plugin)
 	// State update + hot.render() — afterRenderer/afterGetRowHeader/afterRender handle the DOM
 	_hide_rows(rows_to_hide) {
-		rows_to_hide.forEach(r => { if (!this._hidden_rows.includes(r)) this._hidden_rows.push(r); });
+		rows_to_hide.forEach(r => { this._hidden_rows.add(r); });
 		this.hot?.render();
 		this._save_hidden_rows();
 	}
@@ -703,11 +739,11 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		// Find the contiguous block of hidden rows just above next_visible_row
 		const to_show = [];
 		let r = next_visible_row - 1;
-		while (r >= 0 && this._hidden_rows.includes(r)) {
+		while (r >= 0 && this._hidden_rows.has(r)) {
 			to_show.push(r);
 			r--;
 		}
-		this._hidden_rows = this._hidden_rows.filter(x => !to_show.includes(x));
+		to_show.forEach(x => this._hidden_rows.delete(x));
 		this.hot?.render();
 		this._save_hidden_rows();
 	}
@@ -717,18 +753,18 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		const to_show = [];
 		const total = this.list_view?.data?.length || 0;
 		let r = prev_visible_row + 1;
-		while (r < total && this._hidden_rows.includes(r)) {
+		while (r < total && this._hidden_rows.has(r)) {
 			to_show.push(r);
 			r++;
 		}
-		this._hidden_rows = this._hidden_rows.filter(x => !to_show.includes(x));
+		to_show.forEach(x => this._hidden_rows.delete(x));
 		this.hot?.render();
 		this._save_hidden_rows();
 	}
 
 	// V3.1 — Unhide all hidden rows
 	_unhide_all_rows() {
-		this._hidden_rows = [];
+		this._hidden_rows = new Set();
 		this.hot?.render();
 		this._save_hidden_rows();
 	}
@@ -778,34 +814,39 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	 * column right after the name column and hide the 4 originals.
 	 */
 	_inject_meta_column() {
-		const META_FIELDS = ["owner", "creation", "modified_by", "modified"];
-		const has_meta = META_FIELDS.some(f =>
-			this.columns.some(c => c.data === f)
-		);
-		if (!has_meta) return;
+		// Idempotent guard — never add a second _meta column
+		if (this._master_columns.some(c => c.data === "_meta")) return;
 
-		// Build virtual meta column (readOnly, special renderer)
+		const META_FIELDS = new Set(["owner", "creation", "modified_by", "modified"]);
+
+		// Check if any raw meta fields exist in master
+		if (!this._master_columns.some(c => META_FIELDS.has(c.data))) return;
+
+		// Find insert position (right after name = index 1, or wherever first meta field is)
+		const first_idx = this._master_columns.findIndex(c => META_FIELDS.has(c.data));
+		const insert_at = first_idx >= 1 ? first_idx : 1;
+
+		// Permanently remove the 4 raw meta fields from _master_columns.
+		// They must NEVER appear as HOT columns — only the combined _meta col shows.
+		this._master_columns = this._master_columns.filter(c => !META_FIELDS.has(c.data));
+
+		// Build the combined virtual column
 		const meta_col = {
-			data: "_meta",
-			title: "Created / Updated",
-			readOnly: true,
-			_readonly: true,
+			data:       "_meta",
+			title:      "Created / Updated",
+			readOnly:   true,
+			_readonly:  true,
 			_is_meta_col: true,
-			width: 200,
-			renderer: "text", // overridden in afterRenderer
-			className: "htDimmed",
+			width:      200,
+			renderer:   "text",    // overridden in afterRenderer
+			className:  "htDimmed",
 		};
 
-		// Insert after name column (index 0)
-		this.columns.splice(1, 0, meta_col);
-		this._master_columns.splice(1, 0, meta_col);
+		this._master_columns.splice(insert_at, 0, meta_col);
 
-		// Hide the 4 original columns
-		META_FIELDS.forEach(f => {
-			if (this.columns.find(c => c.data === f)) {
-				this._hidden_col_keys.add(f);
-			}
-		});
+		// Belt-and-suspenders: keep hidden_col_keys in sync so _sync_visible_columns
+		// never re-admits them even if they appear on a sheet switch.
+		META_FIELDS.forEach(f => this._hidden_col_keys.add(f));
 
 		// Rebuild visible columns
 		this.columns = this._master_columns.filter(c => !this._hidden_col_keys.has(c.data));
@@ -817,6 +858,10 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	 */
 	_render_meta_cell(TD, row_data) {
 		if (!row_data) { TD.textContent = ""; return; }
+		// Cache keyed by name+modified — same values → reuse cached innerHTML (avoids date parse + escape per render)
+		const _cache_key = `${row_data.name || ""}:${row_data.modified || ""}`;
+		const _cached = this._meta_html_cache?.get(_cache_key);
+		if (_cached) { TD.innerHTML = _cached; return; }
 
 		const _avatar = (user, fullname) => {
 			const info = frappe.boot?.user_info?.[user];
@@ -847,7 +892,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		const mod_info = frappe.boot?.user_info?.[modified_by];
 		const mod_name = mod_info?.fullname || modified_by;
 
-		TD.innerHTML = `
+		const _html = `
 			<div class="ev-meta-cell">
 				<div class="ev-meta-row" title="${frappe.utils.escape_html(owner_name)}">
 					${_avatar(owner, owner_name)}
@@ -859,6 +904,8 @@ frappe.views.ExcelBoard = class ExcelBoard {
 				</div>
 			</div>
 		`;
+		this._meta_html_cache?.set(_cache_key, _html);
+		TD.innerHTML = _html;
 	}
 
 	/**
@@ -1403,7 +1450,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		if (!plugin) return;
 		rows.forEach(row => {
 			// Skip hidden rows — keep them at 0
-			if (!this._hidden_rows?.includes(row)) {
+			if (!this._hidden_rows?.has(row)) {
 				plugin.manualRowHeights[row] = size;
 			}
 		});
@@ -1416,7 +1463,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		// V3.1 — Sync left clone (row headers) with master table hidden rows.
 		// afterGetRowHeader is not always called by updateSettings; this ensures
 		// the row header TRs are always in sync with the data TRs after every render.
-		if (this._hidden_rows?.length) {
+		if (this._hidden_rows?.size) {
 			const masterTRs = this.hot.rootElement?.querySelectorAll(".ht_master tbody tr");
 			const leftTRs = this.hot.rootElement?.querySelectorAll(".ht_clone_left tbody tr");
 			if (masterTRs && leftTRs) {
@@ -1508,6 +1555,10 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		});
 		if (!count) return;
 		this._sync_visible_columns();
+		// Persist to current sheet object so Smart Lookup sees per-sheet hidden state
+		const _cur = this.sheet_manager?.get_current();
+		if (_cur) _cur._hidden_col_keys = new Set(this._hidden_col_keys);
+		frappe.model.user_settings.save(this.doctype, "excel_hidden_cols", [...this._hidden_col_keys]);
 		frappe.show_alert(
 			{
 				message: __(
@@ -1530,7 +1581,10 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			return;
 		}
 		this._hidden_col_keys.clear();
+		const _cur = this.sheet_manager?.get_current();
+		if (_cur) _cur._hidden_col_keys = new Set();
 		this._sync_visible_columns();
+		frappe.model.user_settings.save(this.doctype, "excel_hidden_cols", []);
 		frappe.show_alert(
 			{ message: __("{0} column(s) restored", [count]), indicator: "green" },
 			2
@@ -2133,6 +2187,155 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		});
 	}
 
+	/**
+	 * Re-run all saved Smart Lookup joins after a data refresh.
+	 * Only operates on the base sheet (list_view.data).
+	 */
+	_reapply_smart_lookups() {
+		if (!this._applied_lookups?.length) return;
+		const sm = this.sheet_manager;
+
+		this._applied_lookups.forEach(cfg => {
+			const tgt_sheet = [...(sm?._sheets?.values() || [])].find(
+				s => s.label === cfg.tgt_sheet_label || s.id === cfg.tgt_sheet_id
+			);
+
+			// 1. Live data in the open sheet → fastest path, always fresh.
+			//    Skip if data is marked stale (restored from workbook blank_data).
+			const live = (tgt_sheet?.data?.length && !tgt_sheet._data_is_stale) ? tgt_sheet.data : null;
+			if (live) { this._slk_join(cfg, live, true); return; }
+
+			// 2. Already fetched this session — use cached rows (no repeat API call)
+			//    _fresh_rows is set on cfg after any successful async fetch.
+			if (cfg._fresh_rows?.length) { this._slk_join(cfg, cfg._fresh_rows, false); return; }
+
+			// 3. Resolve tgt_source — or infer from the restored sheet (old workbook format)
+			let src = cfg.tgt_source;
+			if (!src && tgt_sheet) {
+				if (tgt_sheet.doctype) {
+					src = { doctype: tgt_sheet.doctype };
+				} else if (tgt_sheet.report_meta?.name) {
+					src = {
+						report_name:    tgt_sheet.report_meta.name,
+						report_filters: tgt_sheet.report_meta.current_filters || {},
+						col_keys:       (tgt_sheet.columns_config || []).map(c => c.data),
+					};
+				}
+				if (src) cfg.tgt_source = src;
+			}
+
+			// 4. Async fetch — DocType
+			if (src?.doctype) {
+				const fields = [...new Set([cfg.tgt_field, ...cfg.return_fields.map(f => f.fieldname)])];
+				frappe.db.get_list(src.doctype, { fields, limit: 500 })
+					.then(rows => {
+						if (!rows?.length) { this._slk_join_cache(cfg); return; }
+						cfg._fresh_rows = rows;                      // cache on cfg — survives missing tgt_sheet
+						if (tgt_sheet) { tgt_sheet.data = rows; tgt_sheet._data_is_stale = false; }
+						this._slk_join(cfg, rows, true);             // always join (empty list_view = 0 iters, no harm)
+					});
+				return;
+			}
+
+			// 5. Async fetch — Script / Query Report
+			if (src?.report_name) {
+				frappe.call({
+					method: "frappe.desk.query_report.run",
+					args: { report_name: src.report_name, filters: src.report_filters || {}, ignore_prepared_report: 1 },
+					callback: r => {
+						if (!r.message?.result?.length) { this._slk_join_cache(cfg); return; }
+						const api_cols = r.message.columns || [];
+						const col_keys = src.col_keys?.length
+							? src.col_keys
+							: api_cols.map((c, i) => (typeof c === "object" ? c.fieldname || String(i) : String(i)));
+						const rows = r.message.result.map(row => {
+							if (Array.isArray(row)) {
+								return Object.fromEntries(col_keys.map((k, i) => [k, String(row[i] ?? "")]));
+							}
+							const out = {};
+							api_cols.forEach((c, i) => {
+								const api_key = typeof c === "object" ? (c.fieldname || String(i)) : String(c);
+								out[col_keys[i] ?? api_key] = row[api_key] ?? "";
+							});
+							return out;
+						});
+						cfg._fresh_rows = rows;                      // cache on cfg regardless of tgt_sheet state
+						if (tgt_sheet) { tgt_sheet.data = rows; tgt_sheet._data_is_stale = false; }
+						this._slk_join(cfg, rows, true);             // always join
+					},
+				});
+				return;
+			}
+
+			// 6. Last resort — blank/formula sheet with no fetchable source
+			this._slk_join_cache(cfg);
+		});
+	}
+
+	/** Perform the join against live tgt_data rows. */
+	_slk_join(cfg, tgt_data, update_cache = false) {
+		const tgt_map = new Map();
+		tgt_data.forEach(row => {
+			const key = String(row[cfg.tgt_field] ?? "").trim().toLowerCase();
+			if (key) tgt_map.set(key, row);
+		});
+
+		if (update_cache) {
+			const nc = {};
+			tgt_data.forEach(row => {
+				const key = String(row[cfg.tgt_field] ?? "").trim().toLowerCase();
+				if (!key) return;
+				const e = {};
+				cfg.return_fields.forEach(f => { e[f.fieldname] = row[f.fieldname] ?? ""; });
+				nc[key] = e;
+			});
+			cfg._value_cache = nc;
+			frappe.model.user_settings.save(this.doctype, "excel_smart_lookups", this._applied_lookups);
+		}
+
+		(this.list_view?.data || []).forEach(row => {
+			const key = String(row[cfg.src_field] ?? "").trim().toLowerCase();
+			const tr = tgt_map.get(key);
+			cfg.return_fields.forEach(f => {
+				row[`_slk_${f.fieldname}`] = tr ? (tr[f.fieldname] ?? "") : "";
+			});
+		});
+		this._slk_ensure_cols(cfg);
+		this.hot?.render();
+	}
+
+	/** Perform the join using the saved _value_cache (offline / blank-sheet fallback). */
+	_slk_join_cache(cfg) {
+		if (!cfg._value_cache || !Object.keys(cfg._value_cache).length) return;
+		(this.list_view?.data || []).forEach(row => {
+			const key = String(row[cfg.src_field] ?? "").trim().toLowerCase();
+			const tr = cfg._value_cache[key];
+			cfg.return_fields.forEach(f => {
+				row[`_slk_${f.fieldname}`] = tr ? (tr[f.fieldname] ?? "") : "";
+			});
+		});
+		this._slk_ensure_cols(cfg);
+		this.hot?.render();
+	}
+
+	/** Ensure _slk_* columns exist in _master_columns / columns. */
+	_slk_ensure_cols(cfg) {
+		const existing = new Set(this._master_columns.map(c => c.data));
+		let changed = false;
+		cfg.return_fields.forEach(f => {
+			const key = `_slk_${f.fieldname}`;
+			if (!existing.has(key)) {
+				this._master_columns.push({ data: key, title: `${f.label} [${cfg.tgt_sheet_label}]`, readOnly: true, _is_lookup_col: true });
+				existing.add(key);
+				changed = true;
+			}
+		});
+		if (changed) {
+			this.columns = this._master_columns.filter(c => !this._hidden_col_keys.has(c.data));
+			this.hot?.updateSettings({ columns: this.columns });
+		}
+	}
+
 	// ── Field picker ──────────────────────────────────────────────────────────
 
 	/**
@@ -2157,7 +2360,14 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		// Virtual column keys that must never reach the Frappe server
 		const VIRTUAL_KEYS = new Set(["_meta", "_is_meta_col", "_is_join_col", "_is_lookup_col", "_is_formula_col"]);
 		// Separate CT fields (table__child) from regular Frappe fields; exclude virtual keys
-		const regular = fieldnames.filter(f => f !== "name" && !f.includes("__") && !VIRTUAL_KEYS.has(f));
+		// Also exclude _slk_* lookup cols and any other underscore-prefixed virtual keys
+		const regular = fieldnames.filter(f =>
+			f !== "name" &&
+			!f.includes("__") &&
+			!VIRTUAL_KEYS.has(f) &&
+			!f.startsWith("_slk_") &&
+			!f.startsWith("_join_")
+		);
 		this._ct_fieldnames = fieldnames.filter(f => f.includes("__"));
 
 		// column_manager gets ALL fields (regular + CT) for column config
@@ -2166,13 +2376,36 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			...this._ct_fieldnames.map(f => [f, this.doctype]),
 		];
 
-		// Recompute columns + master list; clear any hidden-column state
+		// Recompute columns + master list, then re-apply any persisted hidden cols
 		this.columns = this.column_manager.get_columns();
 		this._master_columns = [...this.columns];
-		this._hidden_col_keys.clear();
-
-		// Push the new column headers to HOT immediately so the UI updates.
-		this.hot.updateSettings({ columns: this.columns });
+		// Re-group meta fields into virtual _meta column if present
+		this._inject_meta_column();
+		// Re-inject Smart Lookup columns into _master_columns after column rebuild
+		if (this._applied_lookups?.length) {
+			const existing_keys = new Set(this._master_columns.map(c => c.data));
+			this._applied_lookups.forEach(cfg => {
+				cfg.return_fields.forEach(f => {
+					const key = `_slk_${f.fieldname}`;
+					if (!existing_keys.has(key)) {
+						this._master_columns.push({
+							data: key,
+							title: `${f.label} [${cfg.tgt_sheet_label}]`,
+							readOnly: true,
+							_is_lookup_col: true,
+						});
+						existing_keys.add(key);
+					}
+				});
+			});
+		}
+		// Remove stale hidden keys (columns no longer in the new set)
+		const _new_keys = new Set(this.columns.map(c => c.data));
+		for (const k of [...this._hidden_col_keys]) {
+			if (!_new_keys.has(k)) this._hidden_col_keys.delete(k);
+		}
+		// Apply hidden state — _sync_visible_columns updates this.columns and HOT
+		this._sync_visible_columns();
 
 		// CRITICAL: list_view.fields only gets REGULAR fields — the Frappe server
 		// doesn't know about CT composite fieldnames (table__child).
@@ -2326,6 +2559,10 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		// V2.3 — clear async formula cache on every data reload so cells
 		// don't show stale values after filters change or "Load More" fires.
 		frappe.views.excel.formula_manager?.clear();
+		// Perf: rebuild lookup maps used by afterRenderer hot path
+		this._meta_html_cache?.clear();
+		this._tree_parent_map = new Map();
+		new_data.forEach((row, i) => { if (row._tree_is_header) this._tree_parent_map.set(row._tree_group_key, i); });
 		this.hot.loadData(new_data);
 
 		// CT columns — re-enrich on every data refresh (idle refresh wipes values)
@@ -2356,6 +2593,11 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			// Columns already exist — just re-fill row values from the API.
 			const cfg = this._last_join_config;
 			setTimeout(() => this._reapply_join_from_config(cfg), 0);
+		}
+
+		// Smart Lookup — re-join after every data refresh so lookup cols stay populated
+		if (this._applied_lookups?.length) {
+			setTimeout(() => this._reapply_smart_lookups(), 0);
 		}
 
 		// V2.6 — Re-render visible chart overlays with latest data so charts
@@ -2702,6 +2944,11 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	_switch_sheet_context(sheet) {
 		if (!sheet) return;
 
+		// Restore incoming sheet's hidden col state
+		this._hidden_col_keys = sheet._hidden_col_keys
+			? new Set(sheet._hidden_col_keys)
+			: new Set();
+
 		// Blank sheet — use its pre-built A–Z columns directly
 		if (sheet.is_blank) {
 			this.columns = sheet.columns_config || [];
@@ -2710,8 +2957,8 @@ frappe.views.ExcelBoard = class ExcelBoard {
 
 		// Cache current base-sheet join config before switching
 		if (sheet.doctype === this.doctype) {
-			// Switching back to base — restore original columns
-			this.columns = [...this._master_columns];
+			// Switching back to base — restore original columns, applying hidden filter
+			this.columns = this._master_columns.filter(c => !this._hidden_col_keys.has(c.data));
 		} else if (sheet._columns) {
 			// Already built columns for this sheet — reuse
 			this.columns = sheet._columns;

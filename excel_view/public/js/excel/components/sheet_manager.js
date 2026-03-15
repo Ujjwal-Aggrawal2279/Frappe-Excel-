@@ -106,6 +106,7 @@ frappe.views.excel.SheetManager = class SheetManager {
 		this._sheets.set(s.id, s);
 		this._render_tabs();
 		this.switch_to(s.id);
+		this._auto_persist_sheets();
 		return s.id;
 	}
 
@@ -116,15 +117,17 @@ frappe.views.excel.SheetManager = class SheetManager {
 	 * @param {Object[]} data_rows    - array of row objects keyed by col.data
 	 * @returns {string} new sheet id
 	 */
-	add_blank_sheet_with_data(label, col_configs, data_rows) {
+	add_blank_sheet_with_data(label, col_configs, data_rows, report_meta = null) {
 		const s = this._make_state({ doctype: null, label: label || __("Pivot"), is_blank: true });
 		s.hf_sheet_id    = this.board.formula_bridge.add_hf_sheet(s.label);
 		s.is_blank       = true;
 		s.columns_config = col_configs;
 		s.data           = data_rows;
+		if (report_meta) s.report_meta = report_meta;
 		this._sheets.set(s.id, s);
 		this._render_tabs();
 		this.switch_to(s.id);
+		this._auto_persist_sheets();
 		return s.id;
 	}
 
@@ -158,6 +161,7 @@ frappe.views.excel.SheetManager = class SheetManager {
 		this._sheets.set(s.id, s);
 		this._render_tabs();
 		this.switch_to(s.id);
+		this._auto_persist_sheets();
 
 		// Trigger IntelliLookup detection
 		const base = this._sheets.get(this._get_sheet0_id());
@@ -177,6 +181,10 @@ frappe.views.excel.SheetManager = class SheetManager {
 		// Save HOT scroll + col widths + column config for current sheet
 		this._save_hot_state(this._active_id);
 		this._capture_col_config(this._active_id);
+
+		// Save outgoing sheet's hidden col state before switching
+		const _outgoing = this._sheets.get(this._active_id);
+		if (_outgoing) _outgoing._hidden_col_keys = new Set(this.board._hidden_col_keys);
 
 		const next = this._sheets.get(id);
 		if (!next) return;
@@ -207,6 +215,7 @@ frappe.views.excel.SheetManager = class SheetManager {
 					this.switch_to(this._get_sheet0_id());
 				}
 				this._render_tabs();
+				this._auto_persist_sheets();
 			}
 		);
 	}
@@ -231,6 +240,16 @@ frappe.views.excel.SheetManager = class SheetManager {
 	 * Omits runtime-only fields (data, hot_scroll).
 	 * @returns {Array}
 	 */
+	/**
+	 * Auto-persist sheet tabs to user_settings so page refresh restores them
+	 * without requiring an explicit workbook save.
+	 */
+	_auto_persist_sheets() {
+		const doctype = this.board?.doctype;
+		if (!doctype) return;
+		frappe.model.user_settings.save(doctype, "excel_sheets", this.serialize());
+	}
+
 	serialize() {
 		return [...this._sheets.values()].map((s) => {
 			const entry = {
@@ -246,6 +265,7 @@ frappe.views.excel.SheetManager = class SheetManager {
 				filters: s.filters,
 				sort_by: s.sort_by,
 				lookup_cols: s.lookup_cols,
+				report_meta: s.report_meta || null,
 			};
 			// Persist blank sheet data (capped at 200 rows to avoid large payloads)
 			if (s.is_blank && s.data?.length) {
@@ -280,10 +300,14 @@ frappe.views.excel.SheetManager = class SheetManager {
 				filters: cfg.filters || [],
 				sort_by: cfg.sort_by || null,
 				lookup_cols: cfg.lookup_cols || [],
+				report_meta: cfg.report_meta || null,
 			});
 			if (cfg.is_blank) {
-				// Restore saved blank data, or generate fresh empty rows
+				// Restore saved blank data, or generate fresh empty rows.
+				// Mark as stale so _reapply_smart_lookups skips the live-data
+				// path and fetches fresh data from the source instead.
 				s.data = cfg.blank_data?.length ? cfg.blank_data : this._blank_data();
+				if (cfg.blank_data?.length) s._data_is_stale = true;
 			}
 			this._sheets.set(s.id, s);
 		});
@@ -298,6 +322,7 @@ frappe.views.excel.SheetManager = class SheetManager {
 		}
 
 		this._render_tabs();
+		this._auto_persist_sheets();
 	}
 
 	/**
@@ -574,7 +599,7 @@ frappe.views.excel.SheetManager = class SheetManager {
 			const width = plugin?.columnWidthsMap?.get(i) ?? col.width ?? 140;
 			if (col._is_formula_col) return { key: col.data, label: col.title, is_formula_col: true, width };
 			if (col._is_join_col) return null;
-			return { fieldname: col.data, width };
+			return { fieldname: col.data, title: col.title, width };
 		}).filter(Boolean);
 	}
 
@@ -608,6 +633,8 @@ frappe.views.excel.SheetManager = class SheetManager {
 
 		board.toolbar?.sync?.();
 		board.status_bar?.clear?.();
+		// Show report filter bar if this sheet was loaded from a report
+		board.toolbar_component?._show_report_filter_bar?.(sheet);
 
 		// Show only charts that belong to this sheet
 		board.chart_manager?._show_overlays_for_sheet(sheet.id);
@@ -688,6 +715,7 @@ frappe.views.excel.SheetManager = class SheetManager {
 			filters: [],
 			sort_by: null,
 			lookup_cols: [],
+			report_meta: null,
 		};
 	}
 };
