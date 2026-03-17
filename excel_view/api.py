@@ -1181,6 +1181,9 @@ def suggest_joins(base_doctype: str, force_refresh: bool = False) -> list:
 
 			# Signal 3: Parenttype - what does the data say? (polymorphic child tables)
 			try:
+				# Validate doctype name before interpolation (only alphanumeric, space, hyphen)
+				if not frappe.db.exists("DocType", base_doctype):
+					raise ValueError(f"Unknown DocType: {base_doctype}")
 				parenttype_counts = frappe.db.sql("""
 					SELECT parenttype, COUNT(*) as count
 					FROM `tab{0}`
@@ -1585,6 +1588,11 @@ def get_joined_data(base_doctype: str, join_config: str, limit: int = 1000) -> l
 			node_downstream_src_fields.setdefault(src_id, set()).add(src_field)
 
 	select_parts = ["`t0`.`name`"]
+	# Include explicitly selected base-node fields (for Preview column parity)
+	for _bf in (join_config.get("base_selected_fields") or []):
+		_safe_bf = _safe_identifier(_bf)
+		if _safe_bf and _safe_bf != "name":
+			select_parts.append(f"`t0`.`{_safe_bf}`")
 	joins_sql    = ""
 	node_alias   = {join_config["nodes"][0]["id"]: "t0"}
 
@@ -1665,6 +1673,9 @@ def get_joined_data(base_doctype: str, join_config: str, limit: int = 1000) -> l
 		where_sql  = f"\nWHERE `t0`.`name` IN ({placeholders})"
 		where_vals = tuple(base_names)
 
+	# Ensure base_doctype exists before building raw SQL (defence-in-depth)
+	if not frappe.db.exists("DocType", base_doctype):
+		frappe.throw(_(f"Unknown DocType: {base_doctype}"))
 	sql = (
 		f"SELECT {', '.join(select_parts)}"
 		f"\nFROM `tab{base_doctype}` `t0`"
@@ -2305,6 +2316,17 @@ def generate_canvas_options(query: str, base_doctype: str = None) -> dict:
 	options = []
 	option_id = 0
 
+	# Module sets for dynamic semantic scoring (defined once per call, not per path)
+	_WEIRD_MODULES = frozenset({
+		"Core", "Email", "Geo", "Printing", "Custom",
+		"Desk", "Social", "Data Migration", "Portal", "Integrations",
+	})
+	_GOOD_MODULES = frozenset({
+		"Selling", "Buying", "Accounts", "HR", "Manufacturing",
+		"Projects", "Stock", "Assets", "Payroll", "CRM", "Loans",
+		"Quality Management", "Support", "Maintenance",
+	})
+
 	for entity in entities:
 		target_dt = entity["doctype"]
 		target_score = entity["score"]
@@ -2319,14 +2341,30 @@ def generate_canvas_options(query: str, base_doctype: str = None) -> dict:
 		# Find paths from base → target with smart performance limits
 		# Use cutoff=5 (max 4 hops) to avoid timeout on complex graphs
 		try:
-			# Use generator to limit results (max 100 paths per target)
-			path_generator = nx.all_simple_paths(G, source=base_doctype, target=target_dt, cutoff=5)
+			# CRITICAL: Use all_shortest_paths (BFS) to guarantee EVERY minimum-hop path
+			# is collected — not just one. DFS (all_simple_paths) misses shorter paths when
+			# its budget fills up with longer paths explored first.
+			try:
+				all_shortest = list(nx.all_shortest_paths(G, source=base_doctype, target=target_dt))
+			except (nx.NetworkXNoPath, nx.NodeNotFound):
+				all_shortest = []
 
-			all_paths = []
-			for path in path_generator:
-				all_paths.append(path)
-				if len(all_paths) >= 100:  # Stop after 100 paths to prevent timeout
-					break
+			# Seed with all minimum-hop paths (BFS — guaranteed complete)
+			seen_path_tuples = {tuple(p) for p in all_shortest}
+			all_paths = list(all_shortest)
+
+			# Fill remaining budget with longer paths via DFS
+			if len(all_paths) < 100:
+				path_generator = nx.all_simple_paths(
+					G, source=base_doctype, target=target_dt, cutoff=5
+				)
+				for path in path_generator:
+					t = tuple(path)
+					if t not in seen_path_tuples:
+						seen_path_tuples.add(t)
+						all_paths.append(path)
+					if len(all_paths) >= 100:
+						break
 
 		except (nx.NetworkXNoPath, nx.NodeNotFound):
 			all_paths = []
@@ -2364,11 +2402,27 @@ def generate_canvas_options(query: str, base_doctype: str = None) -> dict:
 				edge_data = G.get_edge_data(from_dt, to_dt) or {}
 
 				# Determine fields + edge quality based on edge direction
-				if edge_data.get("doctype") == from_dt:
-					# Forward edge: from_dt.fieldname → to_dt.name
+				# Parent-child edges use a "(child)" placeholder — replace with real fields.
+				# edge_data["doctype"] == parent_dt always (second add_edge wins in undirected G).
+				# Detect direction by comparing edge_data["doctype"] with from_dt.
+				if edge_data.get("is_parent_to_child") or edge_data.get("is_child_to_parent"):
+					if edge_data.get("doctype") == from_dt:
+						# from_dt is the parent → traversing parent→child
+						_src_f, _tgt_f = "name", "parent"
+					else:
+						# from_dt is the child → traversing child→parent
+						_src_f, _tgt_f = "parent", "name"
 					path_edges.append({
-						"from": from_dt,
-						"to": to_dt,
+						"from": from_dt, "to": to_dt,
+						"src_field": _src_f, "tgt_field": _tgt_f,
+						"label": edge_data.get("label", ""),
+						"is_child_src": edge_data.get("is_child_src", 0),
+						"is_dynamic": False,
+					})
+				elif edge_data.get("doctype") == from_dt:
+					# Forward Link edge: from_dt.fieldname → to_dt.name
+					path_edges.append({
+						"from": from_dt, "to": to_dt,
 						"src_field": edge_data.get("fieldname", "name"),
 						"tgt_field": "name",
 						"label": edge_data.get("label", ""),
@@ -2376,10 +2430,9 @@ def generate_canvas_options(query: str, base_doctype: str = None) -> dict:
 						"is_dynamic": edge_data.get("is_dynamic", False),
 					})
 				else:
-					# Reverse edge: from_dt.name → to_dt.fieldname
+					# Reverse Link edge: from_dt.name → to_dt.fieldname
 					path_edges.append({
-						"from": from_dt,
-						"to": to_dt,
+						"from": from_dt, "to": to_dt,
 						"src_field": "name",
 						"tgt_field": edge_data.get("fieldname", "name"),
 						"label": edge_data.get("label", ""),
@@ -2387,25 +2440,18 @@ def generate_canvas_options(query: str, base_doctype: str = None) -> dict:
 						"is_dynamic": edge_data.get("is_dynamic", False),
 					})
 
-			# Edge quality scoring (critical for ranking!)
-			# Meta Link = 1.0, Parent-Child = 0.9, Dynamic Link = 0.7, ML = 0.3
-			if not edge_data:
-				edge_quality_scores.append(0.3)  # Unknown edge
-			elif edge_data.get("is_child_to_parent") or edge_data.get("is_parent_to_child"):
-				# Special parent-child relationship (child.parent → parent OR parent → child)
-				edge_quality_scores.append(0.9)  # Parent-Child relationship
-			elif edge_data.get("is_dynamic"):
-				edge_quality_scores.append(0.7)  # Dynamic link
-			elif edge_data.get("fieldname"):
-				# Check if it's a real Link field (meta) or ML suggestion
-				# Real Link fields have is_child_src defined (0 or 1)
-				if "is_child_src" in edge_data:
-					# This includes Link fields FROM child tables - they're Meta Links!
-					edge_quality_scores.append(1.0)  # Meta Link field (including from child tables)
+				# Edge quality scoring per edge (must be inside loop — each edge scored)
+				# Meta Link = 1.0, Parent-Child = 0.9, Dynamic Link = 0.7, ML = 0.3
+				if not edge_data:
+					edge_quality_scores.append(0.3)
+				elif edge_data.get("is_child_to_parent") or edge_data.get("is_parent_to_child"):
+					edge_quality_scores.append(0.9)
+				elif edge_data.get("is_dynamic"):
+					edge_quality_scores.append(0.7)
+				elif edge_data.get("fieldname"):
+					edge_quality_scores.append(1.0 if "is_child_src" in edge_data else 0.3)
 				else:
-					edge_quality_scores.append(0.3)  # ML suggestion
-			else:
-				edge_quality_scores.append(0.5)  # Generic
+					edge_quality_scores.append(0.5)
 
 			# Advanced confidence scoring 🔥
 			# Factor 1: Target extraction confidence (0.55-1.0)
@@ -2418,27 +2464,23 @@ def generate_canvas_options(query: str, base_doctype: str = None) -> dict:
 			# Factor 3: Edge quality (average of all edges in path)
 			edge_quality_avg = sum(edge_quality_scores) / len(edge_quality_scores) if edge_quality_scores else 0.5
 
-			# Factor 4: Semantic relevance (penalize weird intermediate DocTypes)
-			# Weird = rarely used in typical business flows, too generic/technical
-			WEIRD_DOCTYPES = {
-				"Currency", "Asset", "Dunning", "Communication Medium", "Web Template",
-				"Sales Invoice Timesheet",  # Too specific child table used as intermediate
-				"UOM", "Country", "Territory", "Price List", "Warehouse Type",
-				"Cost Center", "Fiscal Year", "Payment Terms Template",
-			}
-			# Good = common business entities in typical ERP flows
-			GOOD_DOCTYPES = {
-				"User", "Employee", "Project", "Task", "Department", "Company",
-				"Timesheet", "Timesheet Detail", "Salary Slip", "Attendance",
-				"Project User", "Employee Group", "Activity Type", "Activity Cost",
-				"Sales Order", "Sales Invoice", "Purchase Order", "Purchase Invoice",
-				"Customer", "Supplier", "Item", "BOM", "Work Order", "Stock Entry",
-			}
-
-			# Count weird vs good DocTypes in intermediate nodes (not endpoints)
+			# Factor 4: Semantic relevance — dynamic, using Frappe DocType metadata
+			# No hardcoded DocType names — driven by module metadata + is_submittable flag.
 			intermediates = path[1:-1] if len(path) > 2 else []
-			weird_count = sum(1 for dt in intermediates if dt in WEIRD_DOCTYPES)
-			good_count = sum(1 for dt in intermediates if dt in GOOD_DOCTYPES)
+			weird_count = 0
+			good_count = 0
+			for _inter_dt in intermediates:
+				try:
+					_meta = frappe.get_meta(_inter_dt, cached=True)
+					if getattr(_meta, "is_submittable", 0):
+						good_count += 1  # Submittable = core transactional doc
+					elif _meta.module in _WEIRD_MODULES:
+						weird_count += 1
+					elif _meta.module in _GOOD_MODULES:
+						good_count += 1
+					# else: neutral (Setup, Website, etc.)
+				except Exception:
+					pass  # Unknown/inaccessible → neutral
 
 			# Semantic score: penalize weird paths, boost good ones
 			if weird_count > 0:
@@ -2448,9 +2490,31 @@ def generate_canvas_options(query: str, base_doctype: str = None) -> dict:
 			else:
 				semantic_score = 0.6  # Neutral
 
-			# Factor 5: Child table bonus (paths with child tables are often useful)
-			ct_bonus = 1.0 + sum(0.1 for e in path_edges if e.get("is_child_src")) * 0.5
-			ct_bonus = min(ct_bonus, 1.3)  # Cap at 30% bonus
+			# Factor 5: Canonical child-table bridge bonus
+			# Pattern: A → CT → B where CT has explicit Link to A AND CT is a child of B
+			# e.g. [Sales Order, Sales Invoice Item, Sales Invoice]:
+			#   SII.sales_order → Sales Order (is_child_src=1, direct link, not parent edge)
+			#   SII → Sales Invoice via parent (is_child_to_parent=True)
+			# Non-canonical CT cross-links (DNI.against_sales_order + DNI.against_sales_invoice)
+			# get NO bonus — they are opportunistic references, not the canonical join design.
+			# Canonical bridge: CT must DIRECTLY bridge source → CT → target (path endpoints only).
+			# Requiring path[k]==path[0] AND path[k+2]==path[-1] prevents false positives like
+			# [Customer, Asset, Item, Packed Item, Sales Order] triggering on Item→Packed→SO.
+			canonical_bridge_count = 0
+			for _k in range(len(path) - 2):
+				if path[_k] != path[0] or path[_k + 2] != path[-1]:
+					continue  # Only fire when CT bridges source→target directly
+				_e1 = G.get_edge_data(path[_k], path[_k + 1]) or {}
+				_e2 = G.get_edge_data(path[_k + 1], path[_k + 2]) or {}
+				if (
+					_e1.get("is_child_src") == 1
+					and not _e1.get("is_child_to_parent")
+					and not _e1.get("is_parent_to_child")
+					and (_e2.get("is_child_to_parent") or _e2.get("is_parent_to_child"))
+				):
+					canonical_bridge_count += 1
+			ct_bonus = 1.0 + canonical_bridge_count * 0.15
+			ct_bonus = min(ct_bonus, 1.3)  # Cap at 30%
 
 			# Final confidence: weighted combination
 			confidence = round(
@@ -2574,6 +2638,125 @@ def build_canvas_from_option(option: str, base_doctype: str) -> dict:
 	}
 
 
+
+def _build_chained_canvas(base_doctype: str, entity_chain: list) -> dict | None:
+	"""Build a multi-hop canvas by chaining paths: base → e1 → e2 → ...
+
+	For a journey query like "Customer → Sales Order → Sales Invoice",
+	this finds the best path for each consecutive pair and stitches them into
+	one canvas config with all nodes and edges.
+
+	Args:
+	    base_doctype: Starting DocType
+	    entity_chain: Ordered list of target entities (excluding base_doctype)
+
+	Returns:
+	    Canvas config dict (nodes + edges) or None if no path found for first leg
+	"""
+	import json as _json
+
+	nodes = []
+	edges = []
+	node_id_counter = 1
+	doctype_to_node_id: dict[str, str] = {}
+	x_offset = 100
+	X_SPACING = 350
+
+	# Add base node
+	base_node_id = f"node_{node_id_counter}"
+	doctype_to_node_id[base_doctype] = base_node_id
+	nodes.append({"id": base_node_id, "doctype": base_doctype, "x": x_offset, "y": 200})
+	node_id_counter += 1
+	x_offset += X_SPACING
+
+	current_source = base_doctype
+	for target in entity_chain:
+		path_result = generate_canvas_options(target, current_source)
+		if not path_result.get("options"):
+			# No direct path — try to add node anyway as orphan
+			if target not in doctype_to_node_id:
+				nid = f"node_{node_id_counter}"
+				doctype_to_node_id[target] = nid
+				nodes.append({"id": nid, "doctype": target, "x": x_offset, "y": 200})
+				node_id_counter += 1
+				x_offset += X_SPACING
+			current_source = target
+			continue
+
+		best = path_result["options"][0]
+		path = best["path"]        # e.g. ["Customer", "Sales Order"]
+		path_edges = best["edges"]  # [{from, to, src_field, tgt_field}, ...]
+
+		# Add intermediate nodes from the found path (skip first — already added as current_source)
+		for dt in path[1:]:
+			if dt not in doctype_to_node_id:
+				nid = f"node_{node_id_counter}"
+				doctype_to_node_id[dt] = nid
+				nodes.append({"id": nid, "doctype": dt, "x": x_offset, "y": 200})
+				node_id_counter += 1
+				x_offset += X_SPACING
+
+		# Add edges for this leg
+		for edge_data in path_edges:
+			src_dt = edge_data["from"]
+			tgt_dt = edge_data["to"]
+			src_nid = doctype_to_node_id.get(src_dt)
+			tgt_nid = doctype_to_node_id.get(tgt_dt)
+			if src_nid and tgt_nid:
+				edges.append({
+					"src_node_id": src_nid,
+					"tgt_node_id": tgt_nid,
+					"src_field": edge_data.get("src_field", "name"),
+					"tgt_field": edge_data.get("tgt_field", "name"),
+					"selected_fields": _auto_select_fields(tgt_dt, max_fields=5),
+				})
+
+		current_source = path[-1]  # End of this leg becomes source for next leg
+
+	if not edges:
+		return None
+
+	return {"base_doctype": base_doctype, "nodes": nodes, "edges": edges}
+
+
+def _check_rate_limit(action: str, limit: int = 30, window_sec: int = 60) -> None:
+	"""Simple Redis sliding-window rate limiter per user+action.
+
+	Raises frappe.TooManyRequestsError if limit exceeded.
+	"""
+	user = frappe.session.user or "guest"
+	key = f"ev_rl:{action}:{user}"
+	pipe = frappe.cache.pipeline()
+	pipe.incr(key)
+	pipe.expire(key, window_sec)
+	results = pipe.execute()
+	count = results[0]
+	if count > limit:
+		frappe.throw(
+			_(f"Too many requests. Max {limit} per {window_sec}s. Please wait."),
+			exc=frappe.TooManyRequestsError,
+		)
+
+
+@frappe.whitelist()
+def genbi_record_alias_feedback(query_term: str, resolved_doctype: str) -> dict:
+	"""Record that a user-typed term resolved to a DocType (implicit confirmation).
+
+	Called when the user clicks a path card or recommendation pill in GenBI.
+	Stored in Redis (30-day TTL) and checked first in entity resolution.
+	"""
+	if not query_term or not resolved_doctype:
+		return {"ok": False}
+	# Validate the doctype exists and user has read permission
+	if not frappe.db.exists("DocType", resolved_doctype):
+		return {"ok": False}
+	frappe.has_permission(resolved_doctype, "read", throw=True)
+
+	from excel_view.genbi.entity_resolver import record_alias_feedback
+	record_alias_feedback(query_term.strip().lower(), resolved_doctype)
+	return {"ok": True}
+
+
 @frappe.whitelist()
 def genbi_chat(query: str, session_id: str, base_doctype: str) -> dict:
 	"""
@@ -2609,16 +2792,37 @@ def genbi_chat(query: str, session_id: str, base_doctype: str) -> dict:
 	from excel_view.genbi.intent_classifier import IntentClassifier
 	from excel_view.genbi.query_parser import QueryParser
 
+	# Permission check — user must have read access to the base DocType
+	frappe.has_permission(base_doctype, "read", throw=True)
+
+	# Rate limit: max 30 GenBI requests per user per minute
+	_check_rate_limit("genbi_chat", limit=30, window_sec=60)
+
 	# Load conversation state
 	conv = ConversationState.load(session_id, base_doctype)
 
-	# Classify intent
+	# Classify intent (returns primary, confidence, optional secondary intent)
 	classifier = IntentClassifier()
-	intent, intent_confidence = classifier.classify(query, conv.context)
+	intent, intent_confidence, secondary_intent = classifier.classify(query, conv.context)
+	# Store secondary intent in context so next-turn handler can auto-trigger it
+	if secondary_intent:
+		conv.context["queued_intent"] = secondary_intent
+	elif "queued_intent" in conv.context:
+		conv.context.pop("queued_intent", None)
 
 	# Extract entities
 	resolver = EntityResolver()
 	entities = resolver.extract_entities(query, conv.context)
+
+	# Guard: if intent is EXPLAIN but the query contains a new entity (not base_doctype
+	# and not already in last context) → user is asking about a NEW connection, not explaining
+	# the last one. Override to FIND_PATH. Fixes: "how are customers linked to sales orders?"
+	if intent == "EXPLAIN" and entities:
+		last_entity_doctypes = set(conv.context.get("last_entities", []))
+		new_entities = [e for e in entities
+		                if e["doctype"] != base_doctype and e["doctype"] not in last_entity_doctypes]
+		if new_entities:
+			intent = "FIND_PATH"
 
 	# Add user turn to conversation
 	conv.add_turn(role="user", message=query, intent=intent, entities=entities)
@@ -2651,56 +2855,167 @@ def genbi_chat(query: str, session_id: str, base_doctype: str) -> dict:
 				"followup_suggestions": [],
 			}
 		else:
-			# Find paths using existing generate_canvas_options
-			target_entity = entities[0]["doctype"]
-			path_result = generate_canvas_options(target_entity, base_doctype)
-
-			if not path_result.get("options"):
+			# Filter out base_doctype — it can't be its own target
+			target_candidates = [e for e in entities if e["doctype"] != base_doctype]
+			_is_journey = False  # set True only when chained journey is handled
+			if not target_candidates:
 				response = {
 					"type": "text",
-					"content": f"No connection found from **{base_doctype}** to **{target_entity}**. They may not be related via Link fields.",
-					"followup_suggestions": [
-						"What can I join?",
-						"Show me common connections",
-					],
+					"content": f"I couldn't identify a target DocType different from **{base_doctype}**. Try asking 'to Sales Order' or 'connect to Project'.",
+					"followup_suggestions": ["What can I join?", "Suggest DocTypes"],
 				}
-			else:
-				# Add data insights to paths
-				insights_engine = DataInsights()
-				options_with_insights = []
+			elif len(target_candidates) >= 2:
+				# Multi-entity "journey/from X to Y" query — chain the paths
+				import re as _re
+				_q_lower = query.lower()
+				_is_journey = bool(_re.search(r"\bjourney\b|\bfrom\b.+\bto\b|\bpipeline\b|\bworkflow\b|\bend.to.end\b", _q_lower))
+				if _is_journey:
+					entity1 = target_candidates[0]["doctype"]
+					entity2 = target_candidates[1]["doctype"]
+					pr1 = generate_canvas_options(entity1, base_doctype)
+					pr2 = generate_canvas_options(entity2, entity1)
+					legs1 = pr1.get("options") or []
+					legs2 = pr2.get("options") or []
 
-				for option in path_result["options"][:10]:  # Top 10 paths only
-					path = option["path"]
-					edges = option["edges"]
+					# Stitch top leg combinations into up to 10 journey paths
+					_insights_engine = DataInsights()
+					journey_options = []
+					_jopt_id = 0
+					for _l1 in legs1[:3]:
+						for _l2 in legs2[:4]:
+							_l1_path = _l1.get("path", [base_doctype, entity1])
+							_l2_path = _l2.get("path", [entity1, entity2])
+							_stitched = _l1_path + _l2_path[1:]
+							_stitched_edges = _l1.get("edges", []) + _l2.get("edges", [])
+							_conf = round((_l1.get("confidence", 0.5) * _l2.get("confidence", 0.5)) ** 0.5, 3)
+							_data_check = _insights_engine.check_path_data(_stitched, _stitched_edges)
+							journey_options.append({
+								"id": f"opt_j_{_jopt_id}",
+								"title": " → ".join(_stitched),
+								"description": f"Journey via {entity1}",
+								"confidence": _conf,
+								"path": _stitched,
+								"edges": _stitched_edges,
+								"estimated_fields": _l1.get("estimated_fields", 5) + _l2.get("estimated_fields", 5),
+								"data_insights": _data_check,
+								"is_journey": True,
+							})
+							_jopt_id += 1
+							if len(journey_options) >= 10:
+								break
+						if len(journey_options) >= 10:
+							break
 
-					# Check data availability
-					data_check = insights_engine.check_path_data(path, edges)
+					journey_options.sort(key=lambda x: x["confidence"], reverse=True)
+					conv.context["last_paths"] = journey_options
+					conv.context["follow_up_mode"] = "build"
 
-					# Add insights to option
-					option["data_insights"] = data_check
-					options_with_insights.append(option)
+					_j_pills = [
+						{
+							"type": "direct" if len(_jo["path"]) <= 3 else "shorter",
+							"label": " → ".join(_jo["path"]),
+							"path_idx": _ji,
+							"hops": len(_jo["path"]) - 1,
+						}
+						for _ji, _jo in enumerate(journey_options[:3])
+					]
 
-				# Store paths in context for follow-up
-				conv.context["last_paths"] = options_with_insights
-				conv.context["follow_up_mode"] = "explain"
+					response = {
+						"type": "paths",
+						"content": {
+							"base_doctype": base_doctype,
+							"target_doctype": entity2,
+							"paths": journey_options,
+							"total": len(journey_options),
+							"showing": len(journey_options),
+							"recommendations": _j_pills,
+							"is_journey": True,
+							"journey_pivot": entity1,
+						},
+						"followup_suggestions": [
+							f"Explain {entity1} to {entity2} connection",
+							f"Build canvas from {base_doctype} to {entity2}",
+							"Which path is shortest?",
+						],
+					}
+				else:
+					# Multiple entities but not a journey query — use first entity only
+					target_candidates = [target_candidates[0]]
 
-				response = {
-					"type": "paths",
-					"content": {
-						"base_doctype": base_doctype,
-						"target_doctype": target_entity,
-						"paths": options_with_insights,
-						"total": len(path_result["options"]),
-						"showing": len(options_with_insights),
-					},
-					"followup_suggestions": [
-						"Explain the first path",
-						"Which path is best?",
-						"Build canvas from top path",
-						"Show me more paths",
-					],
-				}
+			if not _is_journey and target_candidates:
+				target_entity = target_candidates[0]["doctype"]
+				path_result = generate_canvas_options(target_entity, base_doctype)
 
+				if not path_result.get("options"):
+					response = {
+						"type": "text",
+						"content": f"No connection found from **{base_doctype}** to **{target_entity}**. They may not be related via Link fields.",
+						"followup_suggestions": [
+							"What can I join?",
+							"Show me common connections",
+						],
+					}
+				else:
+					# Add data insights to paths
+					insights_engine = DataInsights()
+					options_with_insights = []
+	
+					for option in path_result["options"][:10]:  # Top 10 paths only
+						path = option["path"]
+						edges = option["edges"]
+	
+						# Check data availability
+						data_check = insights_engine.check_path_data(path, edges)
+	
+						# Add insights to option
+						option["data_insights"] = data_check
+						options_with_insights.append(option)
+	
+					# Store paths in context for follow-up
+					conv.context["last_paths"] = options_with_insights
+					conv.context["follow_up_mode"] = "explain"
+
+					# Build recommendation pills for shorter / direct paths
+					top_len = len(options_with_insights[0]["path"]) if options_with_insights else 99
+					rec_pills = []
+					seen_pill_idx = set()
+					for i, opt in enumerate(options_with_insights):
+						hop_count = len(opt["path"]) - 1
+						if hop_count == 1 and i not in seen_pill_idx:
+							rec_pills.append({
+								"type": "direct",
+								"label": "⚡ Direct: " + " → ".join(opt["path"]),
+								"path_idx": i,
+								"hops": 1,
+							})
+							seen_pill_idx.add(i)
+						elif hop_count < top_len - 1 and i not in seen_pill_idx:
+							rec_pills.append({
+								"type": "shorter",
+								"label": "🔀 Shorter: " + " → ".join(opt["path"]) + f" ({hop_count} hop{'s' if hop_count > 1 else ''})",
+								"path_idx": i,
+								"hops": hop_count,
+							})
+							seen_pill_idx.add(i)
+
+					response = {
+						"type": "paths",
+						"content": {
+							"base_doctype": base_doctype,
+							"target_doctype": target_entity,
+							"paths": options_with_insights,
+							"total": len(path_result["options"]),
+							"showing": len(options_with_insights),
+							"recommendations": rec_pills,
+						},
+						"followup_suggestions": [
+							"Explain the first path",
+							"Which path is best?",
+							"Build canvas from top path",
+							"Show me more paths",
+						],
+					}
+	
 	# 2. EXPLAIN - Explain relationships
 	elif intent == "EXPLAIN":
 		last_paths = conv.context.get("last_paths", [])
@@ -2793,28 +3108,27 @@ def genbi_chat(query: str, session_id: str, base_doctype: str) -> dict:
 						],
 					}
 			else:
-				# Build canvas from parsed query
-				# For now, use existing build_canvas_from_option with best path
-				target_entity = parsed["entities"][-1] if len(parsed["entities"]) > 1 else None
+				# Build canvas from parsed query — support multi-entity journey chains
+				non_base_entities = [e for e in parsed["entities"] if e != base_doctype]
 
-				if target_entity:
-					path_result = generate_canvas_options(target_entity, base_doctype)
+				if len(non_base_entities) >= 2:
+					# Multi-entity journey: chain base → e1 → e2 → ...
+					canvas_config = _build_chained_canvas(base_doctype, non_base_entities)
+				elif non_base_entities:
+					path_result = generate_canvas_options(non_base_entities[-1], base_doctype)
+					canvas_config = (
+						build_canvas_from_option(json.dumps(path_result["options"][0]), base_doctype)
+						if path_result.get("options") else None
+					)
+				else:
+					canvas_config = None
 
-					if path_result.get("options"):
-						best_option = path_result["options"][0]
-						canvas_config = build_canvas_from_option(
-							json.dumps(best_option), base_doctype
-						)
-
-						# Add parsed fields/filters to canvas
-						# (This would require canvas config modification - future enhancement)
-
-						conv.context["canvas_state"] = canvas_config
-						conv.context["follow_up_mode"] = "refine"
-
-						response = {
-							"type": "canvas_config",
-							"content": {
+				if canvas_config:
+					conv.context["canvas_state"] = canvas_config
+					conv.context["follow_up_mode"] = "refine"
+					response = {
+						"type": "canvas_config",
+						"content": {
 							"canvas": canvas_config,
 							"parsed_query": parsed,
 						},
@@ -2825,9 +3139,10 @@ def genbi_chat(query: str, session_id: str, base_doctype: str) -> dict:
 						],
 					}
 				else:
+					target_label = non_base_entities[-1] if non_base_entities else "target"
 					response = {
 						"type": "text",
-						"content": f"Could not find a connection from **{base_doctype}** to **{target_entity}**.",
+						"content": f"Could not find a connection from **{base_doctype}** to **{target_label}**.",
 						"followup_suggestions": ["What can I join?"],
 					}
 
@@ -2908,7 +3223,7 @@ def genbi_chat(query: str, session_id: str, base_doctype: str) -> dict:
 				"followup_suggestions": [],
 			}
 
-	# 6. REFINE - Refine previous results
+	# 6. REFINE - Show paths re-sorted by a different criterion
 	elif intent == "REFINE":
 		last_paths = conv.context.get("last_paths", [])
 
@@ -2919,15 +3234,55 @@ def genbi_chat(query: str, session_id: str, base_doctype: str) -> dict:
 				"followup_suggestions": ["Connect to Customer", "What can I join?"],
 			}
 		else:
-			# Simple refinement: show next 10 paths
-			start_idx = len(last_paths)
-			# This would need to store all paths, not just top 10
+			# Re-sort by a different criterion than original (confidence):
+			# 1st refinement → sort by shortest path (fewest hops)
+			# 2nd refinement → sort by data availability (has_data first)
+			refine_count = conv.context.get("refine_count", 0) + 1
+			conv.context["refine_count"] = refine_count
+
+			if refine_count % 2 == 1:
+				# Shortest first
+				refined = sorted(last_paths, key=lambda p: len(p["path"]))
+				sort_label = "shortest paths first"
+			else:
+				# Data-rich first
+				refined = sorted(
+					last_paths,
+					key=lambda p: (not p.get("data_insights", {}).get("has_data", False), len(p["path"])),
+				)
+				sort_label = "paths with live data first"
+
+			base_dt = refined[0]["path"][0] if refined else base_doctype
+			target_dt = refined[0]["path"][-1] if refined else ""
+
+			# Build recommendation pills for this refined view too
+			refined_pills = []
+			seen = set()
+			top_len = len(refined[0]["path"]) if refined else 99
+			for i, opt in enumerate(refined):
+				hops = len(opt["path"]) - 1
+				if hops == 1 and i not in seen:
+					refined_pills.append({"type": "direct", "label": "⚡ Direct: " + " → ".join(opt["path"]), "path_idx": i, "hops": 1})
+					seen.add(i)
+				elif hops < top_len - 1 and i not in seen:
+					refined_pills.append({"type": "shorter", "label": "🔀 Shorter: " + " → ".join(opt["path"]) + f" ({hops} hops)", "path_idx": i, "hops": hops})
+					seen.add(i)
+
 			response = {
-				"type": "text",
-				"content": "Refinement coming soon! For now, I'm showing you the top paths.",
+				"type": "paths",
+				"content": {
+					"base_doctype": base_dt,
+					"target_doctype": target_dt,
+					"paths": refined,
+					"total": len(refined),
+					"showing": len(refined),
+					"recommendations": refined_pills,
+					"sort_label": sort_label,
+				},
 				"followup_suggestions": [
+					"Show me a different path",
 					"Explain first path",
-					"Build canvas",
+					"Build canvas from top path",
 				],
 			}
 
@@ -2949,6 +3304,7 @@ def genbi_chat(query: str, session_id: str, base_doctype: str) -> dict:
 	return {
 		"intent": intent,
 		"intent_confidence": intent_confidence,
+		"secondary_intent": secondary_intent,  # client can show "also doing: EXPLAIN" hint
 		"response": response,
 		"conversation_history": conv.get_recent_context(n=5),
 		"needs_disambiguation": needs_disambiguation,
@@ -2968,6 +3324,39 @@ def _csv_to_headers_rows(text: str):
 	if not all_rows:
 		return {"headers": [], "rows": []}
 	return {"headers": all_rows[0], "rows": all_rows[1:]}
+
+
+
+def _validate_external_url(url: str) -> None:
+	"""Block SSRF: reject requests to RFC-1918 / loopback / link-local addresses."""
+	import ipaddress, socket, re
+	from urllib.parse import urlparse
+
+	parsed = urlparse(url)
+	if parsed.scheme not in ("http", "https"):
+		frappe.throw(_("Only http/https URLs are allowed"))
+
+	hostname = parsed.hostname or ""
+
+	# Block raw IP addresses that are private / loopback / link-local
+	try:
+		ip = ipaddress.ip_address(hostname)
+		if ip.is_private or ip.is_loopback or ip.is_link_local or ip.is_reserved:
+			frappe.throw(_("Requests to internal network addresses are not allowed"))
+	except ValueError:
+		# It's a hostname — resolve and check
+		block_patterns = re.compile(
+			r"^(localhost|.*\.local|.*\.internal|.*\.intranet|metadata\.google\.internal)$",
+			re.I,
+		)
+		if block_patterns.match(hostname):
+			frappe.throw(_("Requests to internal hostnames are not allowed"))
+		try:
+			resolved_ip = ipaddress.ip_address(socket.gethostbyname(hostname))
+			if resolved_ip.is_private or resolved_ip.is_loopback or resolved_ip.is_link_local:
+				frappe.throw(_("Requests to internal network addresses are not allowed"))
+		except OSError:
+			frappe.throw(_(f"Cannot resolve hostname: {hostname}"))
 
 
 @frappe.whitelist()
@@ -3005,6 +3394,7 @@ def fetch_url_text(url: str):
 	"""Return raw text content of any URL (used by CSV / JSON import)."""
 	import requests
 
+	_validate_external_url(url)
 	try:
 		resp = requests.get(url, timeout=20)
 		resp.raise_for_status()
@@ -3025,6 +3415,7 @@ def fetch_web_api(url: str, method: str = "GET", headers: str = "", json_path: s
 	"""
 	import json, requests
 
+	_validate_external_url(url)
 	hdrs: dict = {}
 	if headers:
 		try:
@@ -3150,6 +3541,18 @@ def smart_lookup_suggest(
 	Returns: list of {source_col, target_col, strategy, confidence, reason}
 	sorted by confidence descending, one card per (unclaimed) source column.
 	"""
+	# Permission check — user must be able to read both DocTypes
+	if source_doctype:
+		try:
+			frappe.has_permission(source_doctype, "read", throw=True)
+		except Exception:
+			frappe.throw(_(f"You do not have read access to {source_doctype}"))
+	if target_doctype:
+		try:
+			frappe.has_permission(target_doctype, "read", throw=True)
+		except Exception:
+			frappe.throw(_(f"You do not have read access to {target_doctype}"))
+
 	import json
 	from rapidfuzz import fuzz
 

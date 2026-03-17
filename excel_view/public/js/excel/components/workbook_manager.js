@@ -463,6 +463,9 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 			if (col._is_meta_col) {
 				return { fieldname: "_meta", width, is_meta_col: true };
 			}
+			if (col._is_social_col) {
+				return { fieldname: "_social", width, is_social_col: true };
+			}
 			return { fieldname: col.data, width };
 		}).filter(Boolean);
 
@@ -524,9 +527,9 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 		// ── chart_overlays (V2.6) ──────────────────────────────────────────
 		const chart_overlays = (this.board.chart_overlays || []).map((c) => ({ ...c }));
 
-		// ── cell formatting + conditional formatting (V2.6) ────────────────
+		// ── cell formatting (V2.6) — CF rules are user_settings-only, not in workbook ──
 		const format_store   = { ...this.board.format_store };
-		const cond_fmt_rules = [...(this.board.cond_fmt_rules || [])];
+		const cond_fmt_rules = [];  // intentionally empty — CF rules live in user_settings only
 		// V3.1 — Encode hidden_rows + manual row_heights inside format_store
 		// (no DocType schema change needed; __ prefix avoids collision with cell keys)
 		const plugin_rh = board.hot?.getPlugin("manualRowResize");
@@ -566,20 +569,25 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 		// apply_field_selection.  apply_config's own step-6 refresh is the
 		// single authoritative fetch; two concurrent refreshes create a race
 		// condition where the second board.refresh() wipes joined-row values.
-		const META_AUDIT_FIELDS = ["owner", "creation", "modified_by", "modified"];
-		const has_meta_col = (config.columns_config || []).some(c => c.is_meta_col);
+		const META_AUDIT_FIELDS   = ["owner", "creation", "modified_by", "modified"];
+		const SOCIAL_REGULAR_FIELDS = ["docstatus", "idx"];  // _user_tags/_comments/_assign/_liked_by are auto-fetched
+		const has_meta_col   = (config.columns_config || []).some(c => c.is_meta_col);
+		const has_social_col = (config.columns_config || []).some(c => c.is_social_col);
 		const regular_fieldnames = (config.columns_config || [])
 			.filter(c => !c.is_formula_col)
-			.flatMap(c => c.is_meta_col ? META_AUDIT_FIELDS : [c.fieldname])
+			.flatMap(c => {
+				if (c.is_meta_col)   return META_AUDIT_FIELDS;
+				if (c.is_social_col) return SOCIAL_REGULAR_FIELDS;
+				return [c.fieldname];
+			})
 			.filter(f => f && !String(f).startsWith("_slk_") && !String(f).startsWith("_join_"));
 
 		if (regular_fieldnames.length) {
 			board.apply_field_selection(regular_fieldnames, { silent: true });
 		}
 
-		// apply_field_selection already called _inject_meta_column() internally.
-		// Only sync HOT columns if meta was present (widths may have changed).
-		if (has_meta_col) {
+		// Sync HOT columns if meta or social virtual col was present (widths may have changed).
+		if (has_meta_col || has_social_col) {
 			board.hot.updateSettings({ columns: board.columns });
 		}
 
@@ -722,12 +730,8 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 				}, 0);
 			}
 		}
-		if (Array.isArray(config.cond_fmt_rules) && config.cond_fmt_rules.length) {
-			board.cond_fmt_rules = config.cond_fmt_rules;
-			board._clear_cf_cache?.();
-			frappe.model.user_settings.save(board.doctype, "excel_cf_rules", board.cond_fmt_rules);
-		}
-		if (config.format_store || config.cond_fmt_rules?.length) {
+		// CF rules are user_settings-only — loaded in excel_board._setup(), not restored here.
+		if (config.format_store) {
 			setTimeout(() => board.hot?.render(), 150);
 		}
 
@@ -809,9 +813,8 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 			excel_hidden_cols:      null,
 			excel_hidden_rows:      [],
 			excel_row_heights:      [],
-			// Formatting / CF
+			// Formatting (CF rules are user_settings-only, not cleared on deselect)
 			excel_format_store:     null,
-			excel_cf_rules:         null,
 			// View settings
 			excel_view_freeze:      0,
 			excel_view_freeze_rows: 0,

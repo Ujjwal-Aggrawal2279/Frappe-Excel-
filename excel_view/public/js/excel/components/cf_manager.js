@@ -35,17 +35,17 @@ frappe.views.excel.CFManager = class CFManager {
 		this._default_range = { r1: 0, c1, r2: last_row, c2 };
 
 		this.$modal = $(`
-			<div class="ev-cf-modal modal show" tabindex="-1" style="display:flex;align-items:center;justify-content:center;position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.35)">
-				<div class="ev-cf-dialog" style="background:#fff;border-radius:6px;width:680px;max-height:90vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.2)">
-					<div class="ev-cf-dialog-header" style="padding:14px 20px;border-bottom:1px solid var(--border-color);display:flex;align-items:center;justify-content:space-between">
+			<div class="ev-cf-modal">
+				<div class="ev-cf-dialog">
+					<div class="ev-cf-dialog-header">
 						<strong>${__("Conditional Formatting")}</strong>
 						<button class="ev-cf-close btn btn-sm btn-default">&#x2715;</button>
 					</div>
-					<div class="ev-cf-body" style="flex:1;overflow-y:auto;padding:16px 20px">
+					<div class="ev-cf-body">
 						<div class="ev-cf-rule-list"></div>
-						<button class="ev-cf-add-rule btn btn-sm btn-primary" style="margin-top:10px">+ ${__("New Rule")}</button>
+						<button class="ev-cf-add-rule btn btn-sm btn-primary">+ ${__("New Rule")}</button>
 					</div>
-					<div class="ev-cf-dialog-footer" style="padding:10px 20px;border-top:1px solid var(--border-color);display:flex;justify-content:flex-end;gap:8px">
+					<div class="ev-cf-dialog-footer">
 						<button class="ev-cf-apply btn btn-primary btn-sm">${__("Apply")}</button>
 						<button class="ev-cf-cancel btn btn-default btn-sm">${__("Close")}</button>
 					</div>
@@ -88,8 +88,8 @@ frappe.views.excel.CFManager = class CFManager {
 			$row.find(".ev-cf-delete-rule").on("click", () => {
 				this.board.cond_fmt_rules.splice(idx, 1);
 				this.board._clear_cf_cache?.();
+				this._save_rules();
 				this.board.hot?.render();
-				frappe.model.user_settings.save(this.board.doctype, "excel_cf_rules", this.board.cond_fmt_rules);
 				this._render_rule_list();
 			});
 			$list.append($row);
@@ -116,19 +116,19 @@ frappe.views.excel.CFManager = class CFManager {
 		const range_str = (rng) => `${rng.r1}:${rng.c1}:${rng.r2}:${rng.c2}`;
 
 		this.$editor = $(`
-			<div class="ev-cf-editor-overlay" style="position:fixed;inset:0;z-index:2100;background:rgba(0,0,0,.4);display:flex;align-items:center;justify-content:center">
-				<div style="background:#fff;border-radius:6px;width:480px;padding:20px;box-shadow:0 8px 32px rgba(0,0,0,.25)">
-					<strong style="display:block;margin-bottom:12px">${idx !== null ? __("Edit Rule") : __("New Rule")}</strong>
+			<div class="ev-cf-editor-overlay">
+				<div class="ev-cf-editor-panel">
+					<strong class="ev-cf-editor-title">${idx !== null ? __("Edit Rule") : __("New Rule")}</strong>
 
-					<div style="margin-bottom:10px">
-						<label style="font-size:12px;font-weight:600">${__("Apply to range")}</label><br>
-						<input class="ev-cf-range-input form-control form-control-sm" style="width:100%;margin-top:4px" value="${range_str(r.range)}" placeholder="r1:c1:r2:c2">
-						<small style="color:var(--text-muted)">${__("Format: startRow:startCol:endRow:endCol (0-indexed)")}</small>
+					<div class="ev-cf-field-group">
+						<label class="ev-cf-label">${__("Apply to range")}</label>
+						<input class="ev-cf-range-input form-control form-control-sm" value="${range_str(r.range)}" placeholder="r1:c1:r2:c2">
+						<small class="ev-cf-hint">${__("Format: startRow:startCol:endRow:endCol (0-indexed)")}</small>
 					</div>
 
-					<div style="margin-bottom:10px">
-						<label style="font-size:12px;font-weight:600">${__("Rule Type")}</label><br>
-						<select class="ev-cf-type-sel form-control form-control-sm" style="margin-top:4px">
+					<div class="ev-cf-field-group">
+						<label class="ev-cf-label">${__("Rule Type")}</label>
+						<select class="ev-cf-type-sel form-control form-control-sm">
 							<option value="cell"       ${r.type==="cell"?"selected":""}>${__("Cell Value")}</option>
 							<option value="colorscale" ${r.type==="colorscale"?"selected":""}>${__("Color Scale")}</option>
 							<option value="topN"       ${r.type==="topN"?"selected":""}>${__("Top / Bottom N")}</option>
@@ -137,19 +137,19 @@ frappe.views.excel.CFManager = class CFManager {
 						</select>
 					</div>
 
-					<div class="ev-cf-type-params" style="margin-bottom:10px"></div>
+					<div class="ev-cf-type-params ev-cf-field-group"></div>
 
-					<div class="ev-cf-fmt-row" style="margin-bottom:12px">
-						<label style="font-size:12px;font-weight:600">${__("Format")}</label>
-						<div style="display:flex;gap:10px;margin-top:4px;align-items:center">
-							<label style="font-size:12px">${__("Fill")}</label>
-							<input type="color" class="ev-cf-fmt-bg" value="${r.fmt?.bg || "#ffcccc"}" style="width:36px;height:24px;padding:1px;cursor:pointer">
-							<label style="font-size:12px">${__("Text")}</label>
-							<input type="color" class="ev-cf-fmt-color" value="${r.fmt?.color || "#000000"}" style="width:36px;height:24px;padding:1px;cursor:pointer">
+					<div class="ev-cf-fmt-row ev-cf-field-group">
+						<label class="ev-cf-label">${__("Format")}</label>
+						<div class="ev-cf-color-row">
+							<label class="ev-cf-color-label">${__("Fill")}</label>
+							<input type="color" class="ev-cf-fmt-bg ev-cf-color-input" value="${r.fmt?.bg || "#ffcccc"}">
+							<label class="ev-cf-color-label">${__("Text")}</label>
+							<input type="color" class="ev-cf-fmt-color ev-cf-color-input" value="${r.fmt?.color || "#000000"}">
 						</div>
 					</div>
 
-					<div style="display:flex;justify-content:flex-end;gap:8px">
+					<div class="ev-cf-editor-footer">
 						<button class="ev-cf-editor-save btn btn-primary btn-sm">${__("Save")}</button>
 						<button class="ev-cf-editor-cancel btn btn-default btn-sm">${__("Cancel")}</button>
 					</div>
@@ -182,8 +182,8 @@ frappe.views.excel.CFManager = class CFManager {
 				this.board.cond_fmt_rules.push(new_rule);
 			}
 			this.board._clear_cf_cache?.();
+			this._save_rules();
 			this.board.hot?.render();
-			frappe.model.user_settings.save(this.board.doctype, "excel_cf_rules", this.board.cond_fmt_rules);
 			this._render_rule_list();
 			this.$editor.remove();
 		});
@@ -197,19 +197,19 @@ frappe.views.excel.CFManager = class CFManager {
 			case "cell":
 				$fmt.show();
 				$p.html(`
-					<div style="display:flex;gap:8px;align-items:center">
-						<select class="ev-cf-op form-control form-control-sm" style="width:130px">
+					<div class="ev-cf-param-row">
+						<select class="ev-cf-op form-control form-control-sm ev-cf-op-sel">
 							${[">" ,">=" ,"<" ,"<=" ,"=" ,"!=" ,"between" ,"contains"]
 								.map(op => `<option value="${op}" ${r.op===op?"selected":""}>${op}</option>`).join("")}
 						</select>
-						<input class="ev-cf-val1 form-control form-control-sm" style="width:100px" value="${r.val1 || ""}" placeholder="${__("Value")}">
-						<span class="ev-cf-and-label" style="display:none">${__("and")}</span>
-						<input class="ev-cf-val2 form-control form-control-sm ev-cf-val2-input" style="width:100px;display:none" value="${r.val2 || ""}" placeholder="${__("Value 2")}">
+						<input class="ev-cf-val1 form-control form-control-sm ev-cf-val-input" value="${r.val1 || ""}" placeholder="${__("Value")}">
+						<span class="ev-cf-and-label">${__("and")}</span>
+						<input class="ev-cf-val2 form-control form-control-sm ev-cf-val-input ev-cf-val2-input" value="${r.val2 || ""}" placeholder="${__("Value 2")}">
 					</div>
 				`);
 				const toggle_v2 = (op) => {
 					const show = op === "between";
-					$p.find(".ev-cf-and-label, .ev-cf-val2-input").toggle(show).css("display", show ? "inline-block" : "none");
+					$p.find(".ev-cf-and-label, .ev-cf-val2-input").toggle(show).css("display", show ? "inline-flex" : "none");
 				};
 				$p.find(".ev-cf-op").on("change", (e) => toggle_v2(e.target.value));
 				toggle_v2(r.op || ">");
@@ -217,26 +217,26 @@ frappe.views.excel.CFManager = class CFManager {
 			case "colorscale":
 				$fmt.hide();
 				$p.html(`
-					<div style="display:flex;gap:12px;align-items:center;flex-wrap:wrap">
-						<label style="font-size:12px">${__("Min")}</label>
-						<input type="color" class="ev-cf-min-color" value="${r.min_color || "#ffffff"}" style="width:36px;height:24px;cursor:pointer">
-						<label style="font-size:12px">${__("Mid (opt.)")}</label>
-						<input type="color" class="ev-cf-mid-color" value="${r.mid_color || "#ffff00"}" style="width:36px;height:24px;cursor:pointer">
-						<label style="font-size:12px">${__("Max")}</label>
-						<input type="color" class="ev-cf-max-color" value="${r.max_color || "#ff0000"}" style="width:36px;height:24px;cursor:pointer">
+					<div class="ev-cf-color-row">
+						<label class="ev-cf-color-label">${__("Min")}</label>
+						<input type="color" class="ev-cf-min-color ev-cf-color-input" value="${r.min_color || "#ffffff"}">
+						<label class="ev-cf-color-label">${__("Mid")}</label>
+						<input type="color" class="ev-cf-mid-color ev-cf-color-input" value="${r.mid_color || "#ffff00"}">
+						<label class="ev-cf-color-label">${__("Max")}</label>
+						<input type="color" class="ev-cf-max-color ev-cf-color-input" value="${r.max_color || "#ff0000"}">
 					</div>
 				`);
 				break;
 			case "topN":
 				$fmt.show();
 				$p.html(`
-					<div style="display:flex;gap:8px;align-items:center">
-						<select class="ev-cf-topn-dir form-control form-control-sm" style="width:100px">
+					<div class="ev-cf-param-row">
+						<select class="ev-cf-topn-dir form-control form-control-sm ev-cf-op-sel">
 							<option value="top"    ${r.top!==false?"selected":""}>${__("Top")}</option>
 							<option value="bottom" ${!r.top?"selected":""}>${__("Bottom")}</option>
 						</select>
-						<input type="number" class="ev-cf-topn-n form-control form-control-sm" style="width:70px" value="${r.n || 10}" min="1">
-						<select class="ev-cf-topn-pct form-control form-control-sm" style="width:100px">
+						<input type="number" class="ev-cf-topn-n form-control form-control-sm ev-cf-n-input" value="${r.n || 10}" min="1">
+						<select class="ev-cf-topn-pct form-control form-control-sm ev-cf-op-sel">
 							<option value="count" ${!r.percent?"selected":""}>${__("Items")}</option>
 							<option value="pct"   ${r.percent?"selected":""}>${__("Percent")}</option>
 						</select>
@@ -246,7 +246,7 @@ frappe.views.excel.CFManager = class CFManager {
 			case "duplicate":
 			case "unique":
 				$fmt.show();
-				$p.html(`<small style="color:var(--text-muted)">${__("No additional parameters needed.")}</small>`);
+				$p.html(`<small class="ev-cf-hint">${__("No additional parameters needed.")}</small>`);
 				break;
 		}
 	}
@@ -279,7 +279,18 @@ frappe.views.excel.CFManager = class CFManager {
 	// ── Persistence ─────────────────────────────────────────────────────────
 
 	_save_rules() {
-		frappe.model.user_settings.save(this.board.doctype, "excel_cf_rules", this.board.cond_fmt_rules);
+		const dt = this.board.doctype;
+		const rules = [...(this.board.cond_fmt_rules || [])];
+		// 1. Patch in-memory cache synchronously so any concurrent save() calls
+		//    (e.g. sheet_manager saving excel_sheets right after hot.render()) read
+		//    the updated value and don't overwrite this delete with old rules.
+		const _cache = frappe.model.user_settings[dt];
+		if (_cache) _cache.excel_cf_rules = rules;
+		// 2. Use update() — NOT save() — to force a server POST.
+		//    save() compares old vs new JSON; since we already patched the cache,
+		//    it would see no diff and skip the POST entirely.
+		const full = Object.assign({}, frappe.model.user_settings[dt] || {});
+		frappe.model.user_settings.update(dt, full);
 	}
 
 	_close() {

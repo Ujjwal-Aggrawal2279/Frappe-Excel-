@@ -156,15 +156,15 @@ app_include_css = ["excel_view.bundle.css", "collaboration_dialog.bundle.css"]
 # Scheduled Tasks
 # ---------------
 
-# scheduler_events = {
+scheduler_events = {
+	"hourly": [
+		"excel_view.tasks.hourly"
+	],
 # 	"all": [
 # 		"excel_view.tasks.all"
 # 	],
 # 	"daily": [
 # 		"excel_view.tasks.daily"
-# 	],
-# 	"hourly": [
-# 		"excel_view.tasks.hourly"
 # 	],
 # 	"weekly": [
 # 		"excel_view.tasks.weekly"
@@ -172,7 +172,7 @@ app_include_css = ["excel_view.bundle.css", "collaboration_dialog.bundle.css"]
 # 	"monthly": [
 # 		"excel_view.tasks.monthly"
 # 	],
-# }
+}
 
 # Testing
 # -------

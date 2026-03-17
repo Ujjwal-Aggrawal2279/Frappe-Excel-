@@ -111,6 +111,8 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 		if (this.active_session_id) {
 			this._leave_session();
 		}
+		// Remove all frappe.realtime listeners (prevents duplicate handlers on reopen)
+		this._cleanup_realtime_events();
 		$(document).off("keydown.ev-jc");
 		$(document).off("keydown.ev-jc-space");
 		$(document).off("keyup.ev-jc-space");
@@ -138,46 +140,76 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 		this.$overlay = $(`
 			<div class="ev-canvas-overlay">
 				<div class="ev-jc-header">
-					<span class="ev-jc-header-title">
-						${frappe.utils.escape_html(__("Link Sheets"))}
-						<span class="ev-jc-header-dt">— ${frappe.utils.escape_html(this.board.doctype)}</span>
-					</span>
-					<div class="ev-jc-header-actions">
-						<button class="btn btn-sm btn-default ev-jc-ai-btn"
-						        title="${__("AI Discover — suggest joins from schema analysis")}">
-							✨ ${__("AI")}
-						</button>
-						<button class="btn btn-sm btn-default ev-jc-path-btn"
-						        title="${__("Find Path — auto-chain via shortest link path")}">
-							🔗 ${__("Path")}
-						</button>
-						<button class="btn btn-sm btn-success ev-jc-generate-btn"
-						        title="${__("Generative BI — describe what you want, AI builds the canvas")}">
-							💬 ${__("Generate")}
-						</button>
-						<button class="btn btn-sm btn-default ev-jc-collaborate-btn"
-						        title="${__("Start or join a collaborative canvas session")}">
-							👥 ${__("Collaborate")}
-						</button>
-						<button class="btn btn-sm btn-default ev-jc-add-btn">
-							+ ${__("Add DocType")}
-						</button>
-						<button class="btn btn-sm btn-default ev-jc-preview-btn">
-							${__("Preview")}
-						</button>
-						<button class="btn btn-sm btn-primary ev-jc-apply-btn">
-							${__("Apply")}
-						</button>
-						<button class="btn btn-sm btn-default ev-jc-patterns-btn" style="display:none"
-						        title="${__("Discover business patterns in joined data")}">
-							📊 ${__("Patterns")}
-						</button>
-						<button class="btn btn-sm btn-default ev-jc-analyze-btn" style="display:none"
-						        title="${__("AI Analysis — anomaly detection and clustering on joined data")}">
-							🤖 ${__("Analyze")}
-						</button>
-						<button class="btn btn-sm btn-default ev-jc-close-btn">✕</button>
+					<!-- Left: brand + context -->
+					<div class="ev-jc-header-left">
+						<svg class="ev-jc-header-icon" width="18" height="18" viewBox="0 0 24 24" fill="none">
+							<rect x="2" y="3" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.8"/>
+							<rect x="14" y="3" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.8"/>
+							<rect x="2" y="13" width="8" height="8" rx="1.5" stroke="currentColor" stroke-width="1.8"/>
+							<path d="M10 7h4M10 17h4m0-10v14" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/>
+						</svg>
+						<span class="ev-jc-header-title">${frappe.utils.escape_html(__("Link Sheets"))}</span>
+						<span class="ev-jc-header-sep">›</span>
+						<span class="ev-jc-header-dt">${frappe.utils.escape_html(this.board.doctype)}</span>
 					</div>
+
+					<!-- Center: grouped action pills -->
+					<div class="ev-jc-header-center">
+						<!-- Group 1: Discover -->
+						<div class="ev-jc-btn-group" data-label="${__("Discover")}">
+							<button class="ev-jc-hbtn ev-jc-ai-btn" title="${__("AI Discover — suggest joins from schema analysis")}">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 2l2.09 6.26L20 10l-5.91 1.74L12 18l-2.09-6.26L4 10l5.91-1.74L12 2z" stroke="currentColor" stroke-width="1.8" stroke-linejoin="round"/></svg>
+								${__("AI")}
+							</button>
+							<button class="ev-jc-hbtn ev-jc-path-btn" title="${__("Find Path — auto-chain via shortest link path")}">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="5" cy="12" r="2.5" stroke="currentColor" stroke-width="1.8"/><circle cx="19" cy="12" r="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M7.5 12h9" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+								${__("Path")}
+							</button>
+							<button class="ev-jc-hbtn ev-jc-hbtn--generate ev-jc-generate-btn" title="${__("Generative BI — describe what you want, AI builds the canvas")}">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+								${__("Generate")}
+							</button>
+						</div>
+
+						<div class="ev-jc-header-divider"></div>
+
+						<!-- Group 2: Build -->
+						<div class="ev-jc-btn-group" data-label="${__("Build")}">
+							<button class="ev-jc-hbtn ev-jc-add-btn" title="${__("Add a DocType node to the canvas")}">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+								${__("Add DocType")}
+							</button>
+							<button class="ev-jc-hbtn ev-jc-collaborate-btn" title="${__("Start or join a collaborative canvas session")}">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="9" cy="7" r="3" stroke="currentColor" stroke-width="1.8"/><circle cx="17" cy="9" r="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M3 19c0-3.3 2.7-6 6-6s6 2.7 6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M17 16c1.7 0 3 1.3 3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+								${__("Collaborate")}
+							</button>
+						</div>
+
+						<div class="ev-jc-header-divider"></div>
+
+						<!-- Group 3: Output -->
+						<div class="ev-jc-btn-group" data-label="${__("Output")}">
+							<button class="ev-jc-hbtn ev-jc-preview-btn" title="${__("Preview joined data (5 rows)")}">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z" stroke="currentColor" stroke-width="1.8"/><circle cx="12" cy="12" r="3" stroke="currentColor" stroke-width="1.8"/></svg>
+								${__("Preview")}
+							</button>
+							<button class="ev-jc-hbtn ev-jc-hbtn--apply ev-jc-apply-btn" title="${__("Apply join to grid")}">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M5 12l5 5L20 7" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg>
+								${__("Apply")}
+							</button>
+						</div>
+					</div>
+
+					<!-- Right: close -->
+					<div class="ev-jc-header-right">
+						<button class="ev-jc-hbtn ev-jc-hbtn--close ev-jc-close-btn" title="${__("Close")} (Esc)">
+							<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M18 6L6 18M6 6l12 12" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
+						</button>
+					</div>
+
+					<!-- Hidden legacy buttons (feature-flagged) -->
+					<button class="btn btn-sm btn-default ev-jc-patterns-btn" style="display:none">${__("Patterns")}</button>
+					<button class="btn btn-sm btn-default ev-jc-analyze-btn"  style="display:none">${__("Analyze")}</button>
 				</div>
 				<div class="ev-jc-stage">
 					<svg class="ev-jc-svg" xmlns="http://www.w3.org/2000/svg"></svg>
@@ -333,10 +365,15 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 				&& !(is_child && CHILD_SYS_FIELDS.has(df.fieldname))
 		);
 
-		// Auto-layout: cascade horizontally by 280px per node
-		const existing_count = this.nodes.size;
-		const left = 40 + existing_count * 280;
-		const top  = 60;
+		// Auto-layout: constant 60px gap after the rightmost existing node
+		const NODE_WIDTH = 268;
+		const NODE_GAP   = 60;
+		let left = 40;
+		this.nodes.forEach(n => {
+			const right_edge = (n.el.offsetLeft || 0) + NODE_WIDTH + NODE_GAP;
+			if (right_edge > left) left = right_edge;
+		});
+		const top = 60;
 
 		const node_el = document.createElement("div");
 		node_el.className = "ev-jc-node"
@@ -834,6 +871,8 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 	}
 
 	_remove_node(node_id) {
+		const removed_dt = this.nodes.get(node_id)?.doctype;
+
 		// Remove all edges connected to this node
 		const to_remove = this.edges.filter(
 			e => e.src_node_id === node_id || e.tgt_node_id === node_id
@@ -844,12 +883,25 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 		);
 		this.nodes.get(node_id)?.el.remove();
 		this.nodes.delete(node_id);
+
+		// Update AI drawer card back to "+ Add" if the drawer is open
+		if (removed_dt) {
+			const $card = this.$stage.find(`.ev-jc-ai-card[data-doctype="${CSS.escape(removed_dt)}"]`);
+			if ($card.length) {
+				$card.removeClass("ev-jc-card--added");
+				$card.find(".ev-jc-card-check").replaceWith(
+					`<button class="btn btn-xs btn-primary ev-jc-card-add">${__("+ Add")}</button>`
+				);
+			}
+		}
+
 		// Persist updated layout (node removed)
 		this._auto_save_layout();
 	}
 
 	_delete_edge(edge) {
 		edge.path_el?.remove();
+		edge._hitbox_el?.remove();
 		edge.badge_el?.remove();
 		clearTimeout(edge._remove_timer);
 	}
@@ -1024,9 +1076,11 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 				this._render_edges();
 
 				if (res.valid) {
-					this._show_edge_badge(edge, res);
-					// Mark connected ports as green
+					// Mark connected ports as green first (moves fields to top of containers)
 					this._mark_ports_connected(edge);
+					// Re-render edges AFTER field pinning so SVG paths reflect new port positions
+					this._render_edges();
+					this._show_edge_badge(edge, res);
 					// Persist layout so refresh restores this canvas state
 					// But skip if edge was restored from saved config (prevents infinite broadcast loop)
 					if (!edge._restored) this._auto_save_layout();
@@ -1128,6 +1182,26 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 		badge.style.top  = (mid_y - 10) + "px";
 		this.$nodes[0].appendChild(badge);
 		edge.badge_el = badge;
+
+		// ── Hover-only visibility ─────────────────────────────────────────
+		// Badge hidden by default; fat transparent hitbox on SVG edge path
+		// (20px wide) makes hover easy without pixel-perfect aim.
+		if (edge._hitbox_el) edge._hitbox_el.remove();
+		const hitbox = document.createElementNS("http://www.w3.org/2000/svg", "path");
+		hitbox.style.fill        = "none";
+		hitbox.style.stroke      = "transparent";
+		hitbox.style.strokeWidth = "20";
+		hitbox.style.cursor      = "pointer";
+		hitbox.setAttribute("d", edge.path_el.getAttribute("d") || "");
+		this.$svg[0].appendChild(hitbox);
+		edge._hitbox_el = hitbox;
+
+		const _show = () => badge.classList.add("ev-jc-badge--vis");
+		const _hide = () => badge.classList.remove("ev-jc-badge--vis");
+		hitbox.addEventListener("mouseenter", _show);
+		hitbox.addEventListener("mouseleave", _hide);
+		badge.addEventListener("mouseenter",  _show);
+		badge.addEventListener("mouseleave",  _hide);
 	}
 
 	_show_edge_error(edge, message) {
@@ -1158,7 +1232,10 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 			const tgt = this._get_port_pos(edge.tgt_node_id, edge.tgt_field, "in");
 			if (!src || !tgt) return;
 
-			edge.path_el.setAttribute("d", this._bezier(src, tgt));
+			const d = this._bezier(src, tgt);
+			edge.path_el.setAttribute("d", d);
+			// Keep hitbox path in sync so hover area follows the edge
+			if (edge._hitbox_el) edge._hitbox_el.setAttribute("d", d);
 
 			if (edge.valid === true) {
 				edge.path_el.style.stroke          = "#1d6f42";
@@ -1261,8 +1338,21 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 	}
 
 	_render_preview_table(rows, cfg) {
-		// Build column list with proper human-readable labels
-		const cols = [{ key: "name", label: __("ID"), doctype: this.board.doctype }];
+		// Build column list — base fields first, then joined fields per edge
+		const cols = [{ key: "name", label: __("ID"), doctype: this.board.doctype, group: this.board.doctype }];
+
+		// Base node selected fields (returned as plain fieldnames from API)
+		(cfg.base_selected_fields || []).forEach(f => {
+			if (f === "name") return;
+			cols.push({
+				key:     f,
+				label:   this._field_label(this.board.doctype, f),
+				doctype: this.board.doctype,
+				group:   this.board.doctype,
+			});
+		});
+
+		// Joined node fields (returned as DocType__fieldname from API)
 		cfg.edges.forEach(edge => {
 			const tgt_node = cfg.nodes.find(n => n.id === edge.tgt_node_id);
 			if (!tgt_node) return;
@@ -1276,25 +1366,26 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 			});
 		});
 
-		// Group header row (doctype names spanning columns)
-		let group_header_html = `<th rowspan="2" class="ev-prev-th ev-prev-th--id">${__("ID")}</th>`;
-		// Count how many columns per doctype (skip the name/ID column)
+		// Count columns per group for spanning group headers
 		const groups = {};
-		cols.slice(1).forEach(c => { groups[c.group] = (groups[c.group] || 0) + 1; });
-		Object.entries(groups).forEach(([doctype, count]) => {
-			group_header_html += `<th colspan="${count}" class="ev-prev-th ev-prev-th--group">${frappe.utils.escape_html(doctype)}</th>`;
-		});
+		cols.forEach(c => { groups[c.group] = (groups[c.group] || 0) + 1; });
 
-		// Field label row
-		const field_header_html = cols.slice(1).map(c =>
-			`<th class="ev-prev-th ev-prev-th--field">${frappe.utils.escape_html(c.label)}</th>`
+		// Group header row
+		const group_header_html = Object.entries(groups).map(([dt, count]) =>
+			`<th colspan="${count}" class="ev-prev-th ev-prev-th--group${dt === this.board.doctype ? " ev-prev-th--base" : ""}">${frappe.utils.escape_html(dt)}</th>`
 		).join("");
 
-		// Data rows — green highlight for matched rows, muted for unmatched
+		// Field label row
+		const field_header_html = cols.map(c =>
+			`<th class="ev-prev-th ev-prev-th--field${c.key === "name" ? " ev-prev-th--id" : ""}">${frappe.utils.escape_html(c.label)}</th>`
+		).join("");
+
+		// Data rows
 		const rows_html = rows.map((row, i) => {
 			const has_join = cols.slice(1).some(c => row[c.key] !== null && row[c.key] !== undefined && row[c.key] !== "");
-			const row_cls  = has_join ? (i % 2 === 0 ? "ev-prev-row" : "ev-prev-row ev-prev-row--alt")
-			                          : "ev-prev-row ev-prev-row--empty";
+			const row_cls = has_join
+				? (i % 2 === 0 ? "ev-prev-row" : "ev-prev-row ev-prev-row--alt")
+				: "ev-prev-row ev-prev-row--empty";
 			return `<tr class="${row_cls}">${cols.map(c => {
 				const val = row[c.key];
 				const display = (val !== null && val !== undefined && val !== "") ? String(val) : "";
@@ -1304,45 +1395,32 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 			}).join("")}</tr>`;
 		}).join("");
 
-		const html = `
-			<style>
-				.ev-preview-wrap { overflow:auto; max-height:55vh; border:1px solid #e0e0e0; border-radius:4px; }
-				.ev-prev-table { border-collapse:collapse; min-width:100%; font-size:12px; font-family:inherit; }
-				.ev-prev-th { padding:5px 12px; border:1px solid rgba(255,255,255,0.15); white-space:nowrap; font-weight:600; }
-				.ev-prev-th--id { background:#1a4c97; color:#fff; font-size:11px; }
-				.ev-prev-th--group { background:#1d6f42; color:#fff; text-align:center; font-size:11px; letter-spacing:.3px; }
-				.ev-prev-th--field { background:#2d8a56; color:#fff; font-weight:400; font-size:11px; }
-				thead { position:sticky; top:0; z-index:2; }
-				.ev-prev-td { padding:5px 12px; border:1px solid #e8e8e8; white-space:nowrap; max-width:220px; overflow:hidden; text-overflow:ellipsis; font-size:12px; }
-				.ev-prev-td--null { color:#bbb; }
-				.ev-prev-null { font-style:italic; }
-				.ev-prev-row { background:#fff; }
-				.ev-prev-row--alt { background:#f4faf7; }
-				.ev-prev-row--empty { background:#fafafa; color:#aaa; }
-				.ev-prev-row:hover td { background:rgba(29,111,66,.05) !important; }
-			</style>
-			<div class="ev-preview-wrap">
-				<table class="ev-prev-table">
-					<thead>
-						<tr><th class="ev-prev-th ev-prev-th--id" rowspan="2">${__("ID")}</th>${
-							Object.entries(groups).map(([dt, count]) =>
-								`<th colspan="${count}" class="ev-prev-th ev-prev-th--group">${frappe.utils.escape_html(dt)}</th>`
-							).join("")
-						}</tr>
-						<tr>${field_header_html}</tr>
-					</thead>
-					<tbody>${rows_html}</tbody>
-				</table>
-			</div>`;
-
-		const d = new frappe.ui.Dialog({
-			title: __("Preview — {0} rows", [rows.length]),
-			fields: [{ fieldtype: "HTML", options: html }],
-			primary_action_label: __("Close"),
-			primary_action() { d.hide(); },
-		});
-		d.$wrapper.find(".modal-dialog").css("max-width", "800px");
-		d.show();
+		// Render as in-canvas panel (above canvas z-index, below nothing)
+		this.$overlay.find(".ev-jc-preview-panel").remove();
+		const $panel = $(`
+			<div class="ev-jc-preview-panel">
+				<div class="ev-jc-preview-panel-hdr">
+					<span class="ev-jc-preview-panel-title">
+						<svg width="14" height="14" viewBox="0 0 16 16" fill="none" style="vertical-align:-2px;margin-right:6px"><rect x="1" y="1" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+						${__("Preview")} <span class="ev-prev-badge">${rows.length} ${__("rows")}</span>
+					</span>
+					<button class="ev-jc-preview-panel-close" title="${__("Close")}">✕</button>
+				</div>
+				<div class="ev-jc-preview-panel-body">
+					<div class="ev-preview-wrap">
+						<table class="ev-prev-table">
+							<thead>
+								<tr>${group_header_html}</tr>
+								<tr>${field_header_html}</tr>
+							</thead>
+							<tbody>${rows_html || `<tr><td colspan="${cols.length}" class="ev-prev-empty">${__("No rows returned")}</td></tr>`}</tbody>
+						</table>
+					</div>
+				</div>
+			</div>
+		`);
+		$panel.find(".ev-jc-preview-panel-close").on("click", () => $panel.remove());
+		this.$overlay.append($panel);
 	}
 
 	// ── Apply ─────────────────────────────────────────────────────────────────
@@ -2460,6 +2538,7 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 				</div>
 			`);
 
+			this._last_genbi_query = query;  // stored for feedback recording on path confirm
 			$input.val("").prop("disabled", true);
 			$send.prop("disabled", true);
 
@@ -2598,9 +2677,14 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 	 * Render simple text response
 	 */
 	_render_text_response($messages, response) {
+		// Parse basic markdown: **bold**, \n → <br>
+		const html = String(response.content || "")
+			.replace(/\*\*(.*?)\*\*/g, "<strong>$1</strong>")
+			.replace(/\n\n/g, "<br><br>")
+			.replace(/\n/g, "<br>");
 		$messages.append(`
 			<div class="ev-jc-chat-bubble ev-jc-chat-bubble--system">
-				${response.content}
+				${html}
 			</div>
 		`);
 	}
@@ -2621,23 +2705,112 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 			return;
 		}
 
-		// Show results header
-		const header_msg = content.total > content.showing
-			? __("Found {0} paths, showing top {1} with data insights", [content.total, content.showing])
-			: __("Found {0} connection paths", [content.total]);
-
-		$messages.append(`
-			<div class="ev-jc-chat-bubble ev-jc-chat-bubble--system ev-jc-results-header">
-				<div class="ev-jc-results-icon">✨</div>
-				<div>
-					<strong>${header_msg}</strong>
-					<div style="font-size:11px;opacity:0.8;margin-top:2px">
-						${frappe.utils.escape_html(content.base_doctype)} → ${frappe.utils.escape_html(content.target_doctype)}
+		// Journey banner (shown instead of generic header for multi-leg journeys)
+		if (content.is_journey && content.journey_pivot) {
+			const pivot = frappe.utils.escape_html(content.journey_pivot);
+			const src = frappe.utils.escape_html(content.base_doctype);
+			const tgt = frappe.utils.escape_html(content.target_doctype);
+			$messages.append(`
+				<div class="ev-jc-journey-banner">
+					<div class="ev-jc-journey-banner-route">
+						<span class="ev-jc-journey-node">${src}</span>
+						<span class="ev-jc-journey-arrow">→</span>
+						<span class="ev-jc-journey-node ev-jc-journey-node--pivot">${pivot}</span>
+						<span class="ev-jc-journey-arrow">→</span>
+						<span class="ev-jc-journey-node">${tgt}</span>
+					</div>
+					<div class="ev-jc-journey-banner-sub">
+						${__("{0} journey paths found — click any card to build the canvas", [content.paths.length])}
 					</div>
 				</div>
-			</div>
-		`);
+			`);
+		} else {
+			// Show results header
+			const _sort_label = content.sort_label ? ` · ${content.sort_label}` : "";
+			const header_msg = content.total > content.showing
+				? __("Found {0} paths, showing top {1} with data insights", [content.total, content.showing])
+				: __("Found {0} connection paths", [content.total]);
 
+			$messages.append(`
+				<div class="ev-jc-chat-bubble ev-jc-chat-bubble--system ev-jc-results-header">
+					<div class="ev-jc-results-icon">${content.sort_label ? "🔀" : "✨"}</div>
+					<div>
+						<strong>${header_msg}</strong>
+						<div style="font-size:11px;opacity:0.8;margin-top:2px">
+							${frappe.utils.escape_html(content.base_doctype)} → ${frappe.utils.escape_html(content.target_doctype)}${frappe.utils.escape_html(_sort_label)}
+						</div>
+					</div>
+				</div>
+			`);
+		}
+
+		// --- Recommendation pills (server-provided or client-computed) ---
+		const _server_recs = content.recommendations || [];
+		const _direct = paths.find(p => p.path.length === 2);
+		const _top_path_len = paths[0]?.path.length || 99;
+		const _client_pills = [];
+		if (!_server_recs.length) {
+			if (_direct) {
+				_client_pills.push({ type: "direct", label: "⚡ Direct: " + _direct.path.join(" → "), path_idx: paths.indexOf(_direct), hops: 1 });
+			}
+			paths.forEach((p, i) => {
+				if (p.path.length < _top_path_len - 1 && p !== _direct) {
+					_client_pills.push({ type: "shorter", label: "🔀 Shorter: " + p.path.join(" → ") + ` (${p.path.length - 1} hops)`, path_idx: i, hops: p.path.length - 1 });
+				}
+			});
+		}
+		const _pills = _server_recs.length ? _server_recs : _client_pills;
+
+		if (_pills.length) {
+			const $pills_wrap = $(`
+				<div class="ev-jc-rec-pills-wrap">
+					<div class="ev-jc-rec-pills-label">Quick picks</div>
+					<div class="ev-jc-rec-pills"></div>
+				</div>
+			`);
+			const $pills_row = $pills_wrap.find(".ev-jc-rec-pills");
+			_pills.forEach(pill => {
+				const $pill = $(`<button class="ev-jc-rec-pill ev-jc-rec-pill--${pill.type}">${frappe.utils.escape_html(pill.label)}</button>`);
+				$pill.on("click", () => {
+					const target_opt = paths[pill.path_idx];
+					if (!target_opt) return;
+					$pills_wrap.remove();
+					$messages.find(".ev-jc-chat-option-card").css("opacity", "0.5").css("pointer-events", "none");
+					$messages.append(`<div class="ev-jc-chat-bubble ev-jc-chat-bubble--system">⏳ ${__("Building canvas...")}</div>`);
+					$messages[0].scrollTop = $messages[0].scrollHeight;
+					this._build_canvas_from_selected_option_chat(target_opt, $messages, drawer);
+				});
+				$pills_row.append($pill);
+			});
+			$messages.append($pills_wrap);
+		}
+
+		// Smart Insights (data / hub info only — not duplicating pills)
+		const _insights = [];
+		const _with_data = paths.filter(p => p.data_insights?.has_data);
+		if (_with_data.length) {
+			const _sd = _with_data.reduce((a, b) => a.path.length <= b.path.length ? a : b);
+			const _hops = _sd.path.length - 1;
+			_insights.push(`✅ <strong>${_with_data.length} path${_with_data.length > 1 ? "s" : ""} have live data</strong> — shortest with data: ${_hops} hop${_hops > 1 ? "s" : ""} via <em>${frappe.utils.escape_html(_sd.path.slice(1, -1).join(" → ") || "direct link")}</em>.`);
+		}
+		const _hub_map = {};
+		paths.forEach(p => p.path.slice(1, -1).forEach(dt => { _hub_map[dt] = (_hub_map[dt] || 0) + 1; }));
+		const _top_hub = Object.entries(_hub_map).sort((a, b) => b[1] - a[1])[0];
+		if (_top_hub && _top_hub[1] >= 3) {
+			_insights.push(`🔗 <strong>${frappe.utils.escape_html(_top_hub[0])}</strong> is a hub — appears in ${_top_hub[1]} paths.`);
+		}
+		const _top = paths[0];
+		if (_top && _direct && _top !== _direct && _top.estimated_fields > (_direct.estimated_fields || 0) * 1.5) {
+			_insights.push(`📊 Top-ranked path has <strong>${_top.estimated_fields} fields</strong> vs ${_direct.estimated_fields || "few"} direct — more depth through ${frappe.utils.escape_html(_top.path.slice(1, -1).join(" → "))}.`);
+		}
+		if (_insights.length) {
+			$messages.append(`
+				<div class="ev-jc-chat-bubble ev-jc-chat-bubble--system ev-jc-recommendations">
+					<div style="font-size:11px;font-weight:600;opacity:0.65;margin-bottom:6px;text-transform:uppercase;letter-spacing:0.5px">💡 Smart Insights</div>
+					${_insights.map(i => `<div class="ev-jc-rec-item">${i}</div>`).join("")}
+				</div>
+			`);
+		}
 		// Show paths (top 10)
 		const BATCH_SIZE = 5;
 		let displayed_count = 0;
@@ -2878,19 +3051,58 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 	 * Apply auto-built canvas from query parser
 	 */
 	_apply_auto_built_canvas(canvas_config) {
-		// Use existing canvas building logic
-		const nodes = canvas_config.nodes || [];
-		const edges = canvas_config.edges || [];
+		const nodes   = canvas_config.nodes || [];
+		const edges   = canvas_config.edges || [];
+		const id_map  = {}; // config_id → actual node id
+		let loaded    = 0;
 
-		nodes.forEach(node_config => {
-			this._add_doctype_node(node_config.doctype, node_config.x, node_config.y, node_config.id);
+		if (!nodes.length) { this._auto_save_layout(); return; }
+
+		nodes.forEach((nc, i) => {
+			frappe.model.with_doctype(nc.doctype, () => {
+				const before_ctr = this._node_ctr;
+				this._add_node(nc.doctype, { base: i === 0 });
+				const actual_id = `node_${before_ctr}`;
+				if (nc.id) id_map[nc.id] = actual_id;
+
+				// Override auto-layout position if AI specified one
+				if (nc.x != null || nc.y != null) {
+					const node = this.nodes.get(actual_id);
+					if (node?.el) {
+						if (nc.x != null) node.el.style.left = nc.x + "px";
+						if (nc.y != null) node.el.style.top  = nc.y + "px";
+					}
+				}
+
+				if (++loaded < nodes.length) return;
+
+				// All nodes ready — create edges
+				edges.forEach(ec => {
+					const src_id = id_map[ec.src_node_id] ?? ec.src_node_id;
+					const tgt_id = id_map[ec.tgt_node_id] ?? ec.tgt_node_id;
+					if (!this.nodes.has(src_id) || !this.nodes.has(tgt_id)) return;
+					const path_el = this._create_svg_path("ev-jc-edge ev-jc-edge--pending");
+					const edge = {
+						id:            `edge_${this._edge_ctr++}`,
+						src_node_id:   src_id,
+						src_field:     ec.src_field,
+						tgt_node_id:   tgt_id,
+						tgt_field:     ec.tgt_field,
+						valid:         null,
+						confidence:    null,
+						method:        null,
+						path_el,
+						badge_el:      null,
+						_remove_timer: null,
+					};
+					this.edges.push(edge);
+					this._validate_edge(edge);
+				});
+
+				this._render_edges();
+				this._auto_save_layout();
+			});
 		});
-
-		edges.forEach(edge_config => {
-			this._add_edge(edge_config);
-		});
-
-		this.save_state_debounced();
 	}
 
 	/**
@@ -2920,6 +3132,16 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 				}
 
 				const config = r.message;
+
+				// Record alias feedback: target DocType confirmed by user clicking the path
+				const _target_dt = config.nodes?.find(n => n.doctype !== config.base_doctype)?.doctype;
+				if (_target_dt && this._last_genbi_query) {
+					frappe.call({
+						method: "excel_view.api.genbi_record_alias_feedback",
+						args: { query_term: this._last_genbi_query, resolved_doctype: _target_dt },
+						callback: () => {}  // fire-and-forget
+					});
+				}
 
 				// Clear existing non-base nodes and edges
 				const base_node = [...this.nodes.values()].find(n => n.doctype === this.board.doctype);
@@ -2999,6 +3221,10 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 
 					// Redraw all edges
 					this._render_edges();
+
+					// Force-save new canvas state immediately — overwrites any stale persisted state
+					// (e.g. wrong nodes from a previous broken GenBI query)
+					this._auto_save_layout();
 
 					// Success message in chat
 					$messages.append(`
@@ -3538,69 +3764,60 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 	}
 
 	_setup_realtime_events() {
-		// Use Frappe's built-in realtime.on() - NO custom Socket.IO handlers!
+		// Guard: tear down any previous listeners before adding new ones
+		this._cleanup_realtime_events();
 
-		// User joined event (published from Python)
-		frappe.realtime.on('canvas_user_joined', (data) => {
-			// FILTER: Only process if it's for our active session and not ourselves
-			if (data.session_id === this.active_session_id &&
-			    data.user !== frappe.session.user &&
-			    this.collab_sidebar) {
-				this.collab_sidebar.online_users.add_user(data);
-			}
+		// Store named handlers so we can remove them precisely in cleanup
+		this._rt_handlers = {
+			canvas_user_joined: (data) => {
+				if (data.session_id === this.active_session_id &&
+				    data.user !== frappe.session.user &&
+				    this.collab_sidebar) {
+					this.collab_sidebar.online_users.add_user(data);
+				}
+			},
+			canvas_user_left: (data) => {
+				if (data.session_id === this.active_session_id && this.collab_sidebar) {
+					this.collab_sidebar.online_users.remove_user(data);
+				}
+			},
+			canvas_chat_message: (data) => {
+				if (data.session_id === this.active_session_id && this.collab_sidebar) {
+					this.collab_sidebar.chat.add_message(data);
+				}
+			},
+			canvas_updated: (data) => {
+				if (data.user === frappe.session.user) return;
+				if (data.session_id !== this.active_session_id) return;
+				this._apply_remote_canvas_state(data.canvas_state, data.timestamp);
+				frappe.show_alert({
+					message: __('{0} updated the canvas', [frappe.user_info(data.user).fullname]),
+					indicator: 'blue'
+				}, 2);
+			},
+			canvas_node_moved: (data) => {
+				if (data.user === frappe.session.user) return;
+				if (data.session_id !== this.active_session_id) return;
+				const node = this.nodes.get(data.node_id);
+				if (node && node.el) {
+					node.el.style.left = data.position.left + 'px';
+					node.el.style.top = data.position.top + 'px';
+					this._render_edges();
+				}
+			},
+		};
+
+		Object.entries(this._rt_handlers).forEach(([event, handler]) => {
+			frappe.realtime.on(event, handler);
 		});
+	}
 
-		// User left event (published from Python)
-		frappe.realtime.on('canvas_user_left', (data) => {
-			// FILTER: Only process if it's for our active session
-			if (data.session_id === this.active_session_id && this.collab_sidebar) {
-				this.collab_sidebar.online_users.remove_user(data);
-			}
+	_cleanup_realtime_events() {
+		if (!this._rt_handlers) return;
+		Object.entries(this._rt_handlers).forEach(([event, handler]) => {
+			frappe.realtime.off(event, handler);
 		});
-
-		// Chat message event (published from Python)
-		frappe.realtime.on('canvas_chat_message', (data) => {
-			// FILTER: Only process if it's for our active session
-			if (data.session_id === this.active_session_id && this.collab_sidebar) {
-				this.collab_sidebar.chat.add_message(data);
-			}
-		});
-
-		// Canvas state updated by another user (Phase 4)
-		frappe.realtime.on('canvas_updated', (data) => {
-			// Ignore self-updates (avoid echo)
-			if (data.user === frappe.session.user) return;
-
-			// Filter: only process if for our active session
-			if (data.session_id !== this.active_session_id) return;
-
-
-			// Apply remote canvas state
-			this._apply_remote_canvas_state(data.canvas_state, data.timestamp);
-
-			// Show brief notification
-			frappe.show_alert({
-				message: __('{0} updated the canvas', [frappe.user_info(data.user).fullname]),
-				indicator: 'blue'
-			}, 2);
-		});
-
-		// Live node position updates (Phase 4 - throttled from other users' drags)
-		frappe.realtime.on('canvas_node_moved', (data) => {
-			// Ignore self-updates
-			if (data.user === frappe.session.user) return;
-
-			// Filter: only for our active session
-			if (data.session_id !== this.active_session_id) return;
-
-			// Apply position update
-			const node = this.nodes.get(data.node_id);
-			if (node && node.el) {
-				node.el.style.left = data.position.left + 'px';
-				node.el.style.top = data.position.top + 'px';
-				this._render_edges(); // Update connected edges
-			}
-		});
+		this._rt_handlers = null;
 	}
 
 	_get_canvas_state() {

@@ -47,6 +47,9 @@ Works on **vanilla Frappe** and optionally unlocks ERPNext-specific formula func
 - **Full Format Persistence** — All Home tab formatting, column widths, row heights, and hidden rows survive page refresh (user_settings) and are saved/restored via workbook "Save View"
 - **Report Filter Bar** — Load any Frappe Script/Query Report via Data → Get Data → From Reports; a live filter bar appears above the grid with fieldtype-aware Frappe controls (Link with autocomplete, Date picker, Select dropdown, DateRange as two pickers); Refresh re-runs the report with updated filters; report metadata persisted in workbook
 - **Smart Lookup** — Data tab → Smart Lookup; 3-layer join column detection (Layer 1: Frappe meta Link fields → Layer 2: fuzzy header match via rapidfuzz → Layer 3: Jaccard data overlap); works across any two sheets including report sheets; suggestion cards with confidence bars; Apply delegates to IntelliLookup flow
+- **Activity Column** — The 6 Frappe social fields (`_user_tags`, `_comments`, `_assign`, `_liked_by`, `docstatus`, `idx`) are automatically grouped into one compact "Activity" virtual column with CRUD click handlers: like toggle (♥), assign dialog, tag add prompt, comment → route to form; docstatus badge (Draft/Submitted/Cancelled); avatar chips for assigned users
+- **Conditional Formatting — Dark Theme** — CF dialog fully dark-theme compatible; all `background:#fff` inline styles removed and replaced with CSS variables (`var(--fg-color)`, `var(--text-color)`, `var(--border-color)`) via SCSS classes; `[data-theme="dark"]` override block
+- **CF Persistence Fix** — Fixed `frappe.model.user_settings` race condition where deleting a CF rule was restored on page refresh; root cause: concurrent saves read stale in-memory cache; fix uses synchronous cache-patch + `update()` (bypasses no-change guard) instead of `save()`
 
 ---
 
@@ -185,9 +188,9 @@ bench build --app excel_view   # required after every pull (dist files are not c
 
 ## Release Notes
 
-### v3.2 — Mar 2026 (Current, In Progress)
+### v3.2 — Mar 2026
 
-**Zero-LLM Intelligence — Report Filter Bar + Smart Lookup**
+**Zero-LLM Intelligence — Report Filter Bar + Smart Lookup + Activity Column + Dark Theme Fixes**
 
 **Report Filter Bar**
 - Load any Frappe Script Report or Query Report via Data → Get Data → From Reports
@@ -208,10 +211,27 @@ bench build --app excel_view   # required after every pull (dist files are not c
 - Suggestion cards show: strategy icon (🔗/🔤/📊), confidence %, source→target column, reason, color-coded bar
 - Apply → delegates to IntelliLookup column picker (reuses proven lookup flow)
 
-**Remaining V3.2 (next session)**
-- Flash Fill (Ctrl+E)
-- Formula Autodetect Ghost Text
-- `=DETECT_LANGUAGE()` / `=TRANSLATE()` HyperFormula functions
+**Activity Column (Social Virtual Column)**
+- When `_user_tags`, `_comments`, `_assign`, `_liked_by`, `docstatus`, `idx` are in the column selection, they are automatically grouped into one compact "Activity" column (mirrors the Meta Column pattern)
+- Each row shows: docstatus badge (Draft/Submitted/Cancelled) · assigned user avatar chips · like button (♥ count, fills red when current user has liked) · comment count · tag chips · idx index
+- CRUD click handlers via jQuery event delegation on `$hot_container` with `data-sc` attributes:
+  - Like → `frappe.desk.like.toggle_like` API + in-place re-render
+  - Assign → `frappe.desk.form.assign_to.get` + Dialog
+  - Tags → `frappe.prompt` + `frappe.desk.tags.add_tag`
+  - Comment → `frappe.set_route` to doc form
+- Workbook save/load: stored as `{ fieldname: "_social", is_social_col: true }` marker; expanded to `["docstatus","idx"]` on load (underscore fields auto-fetched by list view)
+- `_social_html_cache` Map keyed by `name:tags:comments:assign:liked:docstatus:idx` — skips re-render if unchanged; cleared on refresh
+
+**Dark Theme & Layout Fixes**
+- **New-row cells / fetch-auto cells**: `rgba()` on HOT white `<td>` produced cream in dark mode → replaced with opaque `#1a2a1e` / `#1c2820` overrides in `[data-theme="dark"]`
+- **Inline insert bar**: was `position:absolute;top:0` inside `$hot_container` — covered HOT column headers; fixed to `prependTo($grid_main)` with `width:100%;flex-shrink:0` (in-flow flex child)
+- **Sheet tabs**: `.ev-sheet-tabs` / `.ev-sheet-tab` CSS was entirely absent — tabs defaulted to `display:block` and stacked; full CSS block added
+- **CF dialog**: removed all `background:#fff` hardcoded inline styles from both the main dialog and editor sub-dialog HTML; replaced with CSS classes + `[data-theme="dark"]` SCSS block using `var(--fg-color)` / `var(--text-color)` / `var(--border-color)`
+
+**Conditional Formatting Persistence Fix**
+- Root cause: `frappe.model.user_settings.save()` does NOT update the in-memory cache synchronously — only in the async callback. Concurrent saves (e.g. `sheet_manager` saving `excel_sheets` right after `hot.render()`) read the stale cache (still containing the deleted rule) and POST it after the delete's POST, restoring the old rule
+- Fix: `cf_manager._save_rules()` now (1) patches `frappe.model.user_settings[doctype].excel_cf_rules` synchronously before posting, and (2) calls `frappe.model.user_settings.update()` instead of `save()` to bypass the no-change guard (which would skip the POST if the cache was already patched)
+- CF rules removed from workbook serialization/restoration — they are `user_settings`-only; workbook restore no longer touches `excel_cf_rules`
 
 ---
 
@@ -521,15 +541,12 @@ bench build --app excel_view   # required after every pull (dist files are not c
 
 ## Upcoming
 
-### v3.2 — Zero-LLM Intelligence (remaining)
+### v3.3 — Zero-LLM Intelligence II + Data Integrity
 
 - **Flash Fill (Ctrl+E)** — auto-detect and fill patterns from 2+ examples (prefix/suffix stripping, delimiter split, case transform, regex extraction); server-side strategy engine in `api.py`
 - **Formula Autodetect / Ghost Text** — type `=` in a cell → header-aware ghost text suggests `=SUM(...)`, `=TEXT(...,"mmmm")`, etc.; Tab to accept
 - **`=DETECT_LANGUAGE(cell)`** — langdetect-powered language detection formula (returns "en", "es", "fr", etc.)
 - **`=TRANSLATE(cell, lang)`** — dict-based business term translation (Invoice→Factura, etc.; no LLM)
-
-### v3.3 — Data Integrity & Live Sync
-
 - **Frappe-Native Validators** — `beforeChange` hook validates Currency/Float/Int (non-numeric → reverts), strips whitespace, checks Link field existence (red triangle indicator on invalid)
 - **Live Pivot Refresh** — Frappe SocketIO `list_update` event triggers debounced pivot recompute; pivot sheet updates in-place without losing filter state
 - **Smart Lookup N-hop** — NetworkX schema graph enhancement: Layer 1 extended to traverse multi-hop paths (Sales Invoice → Customer → Territory) using `nx.shortest_path`

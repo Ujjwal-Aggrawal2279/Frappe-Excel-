@@ -58,6 +58,8 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this._tree_parent_map = null;
 		// Perf: meta-cell HTML cache (avoids repeated innerHTML builds + date parses)
 		this._meta_html_cache = new Map();
+		// Social column cache
+		this._social_html_cache = new Map();
 		// V3.1 — Repeat Last Action (F4)
 		this._last_action = null;
 		this._setup();
@@ -128,6 +130,8 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this._hidden_col_keys = new Set(); // data keys of hidden columns
 		// V3.1 — Inject combined meta column (Created/Updated info) if std fields present
 		this._inject_meta_column();
+		// Inject combined social column (Tags/Comments/Assign/Liked/Status/Idx) if present
+		this._inject_social_column();
 		this.matrix = this.data_manager.to_matrix(this.data, this.columns);
 
 		// Initialise formula engine
@@ -297,6 +301,9 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			}, 60)
 		);
 		this._resize_observer.observe(this.$grid_main[0]);
+
+		// Social column CRUD: delegated click handler on hot container
+		this._bind_social_clicks();
 	}
 
 	_init_hot() {
@@ -315,7 +322,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			// V3.1 — rowHeights: 0 for hidden rows, 42px when meta col present, else 23px
 			rowHeights: (row) => {
 				if (this._hidden_rows?.has(row)) return 0;
-				return this.columns?.some(c => c._is_meta_col) ? 42 : 23;
+				return this.columns?.some(c => c._is_meta_col || c._is_social_col) ? 42 : 23;
 			},
 			columnSorting: true,
 			allowInsertRow: this.list_view.can_create,
@@ -522,6 +529,14 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			return;
 		}
 
+		// Social column: render Tags/Comments/Assign/Liked/Status/Idx
+		if (this.columns[col]?._is_social_col) {
+			this._render_social_cell(TD, this.list_view?.data?.[row]);
+			TD.style.padding = "0";
+			TD.style.verticalAlign = "middle";
+			return;
+		}
+
 		// docstatus: render 0/1/2 as a coloured badge instead of raw number
 		if (this.columns[col]?._is_docstatus) {
 			const v = parseInt(value, 10);
@@ -590,7 +605,8 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			TD.classList.add("ev-tree-header");
 		} else if (row_data?._tree_is_child) {
 			TD.classList.add("ev-tree-child");
-			TD.style.backgroundColor = "rgba(0,0,0,0.025)";
+			const _dark = document.documentElement.dataset.theme === "dark";
+			TD.style.backgroundColor = _dark ? "rgba(255,255,255,0.045)" : "rgba(0,0,0,0.025)";
 		}
 
 		const fmt = this.format_store?.[`${row}:${col}`];
@@ -638,15 +654,21 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		// V2.6 — Conditional formatting (applied last so it can override user formats)
 		if (this.cond_fmt_rules?.length) {
 			const raw_val = this.list_view?.data?.[row]?.[this.columns[col]?.data];
+			const row_data = this.list_view?.data?.[row];
+			// Perf: track which properties have been set so we can stop early
+			let _cf_bg_set = false, _cf_color_set = false;
 			for (const rule of this.cond_fmt_rules) {
+				// Early exit: all possible CF properties already applied
+				if (_cf_bg_set && _cf_color_set) break;
 				const rng = rule.range || {};
-				// Normalize range bounds (handle inverted selections saved before fix)
-				const minR = Math.min(rng.r1, rng.r2), maxR = Math.max(rng.r1, rng.r2);
 				const minC = Math.min(rng.c1, rng.c2), maxC = Math.max(rng.c1, rng.c2);
 				if (col < minC || col > maxC) continue;
-				const row_data = this.list_view?.data?.[row];
+				// Skip bg-only rules if bg already set
+				if (_cf_bg_set && rule.fmt?.bg && !rule.fmt?.color) continue;
+				// Skip color-only rules if color already set
+				if (_cf_color_set && rule.fmt?.color && !rule.fmt?.bg) continue;
+				const minR = Math.min(rng.r1, rng.r2), maxR = Math.max(rng.r1, rng.r2);
 				if (row_data?._tree_is_child) {
-					// O(1) lookup via pre-built map (built in refresh, cleared on data change)
 					const parent_idx = this._tree_parent_map?.get(row_data._tree_group_key) ?? -1;
 					if (parent_idx < 0 || parent_idx < minR || parent_idx > maxR) continue;
 				} else if (row < minR || row > maxR) {
@@ -654,16 +676,21 @@ frappe.views.ExcelBoard = class ExcelBoard {
 				}
 				const result = this._eval_cf_rule(rule, raw_val);
 				if (result === true) {
-					if (rule.fmt?.bg) {
+					if (rule.fmt?.bg && !_cf_bg_set) {
 						TD.style.setProperty("--ev-cell-fill", rule.fmt.bg);
 						TD.style.setProperty("background-color", rule.fmt.bg, "important");
 						TD.style.setProperty("background-image", "none", "important");
+						_cf_bg_set = true;
 					}
-					if (rule.fmt?.color) TD.style.color = rule.fmt.color;
-				} else if (result && result.colorscale_bg) {
+					if (rule.fmt?.color && !_cf_color_set) {
+						TD.style.color = rule.fmt.color;
+						_cf_color_set = true;
+					}
+				} else if (result && result.colorscale_bg && !_cf_bg_set) {
 					TD.style.setProperty("--ev-cell-fill", result.colorscale_bg);
 					TD.style.setProperty("background-color", result.colorscale_bg, "important");
 					TD.style.setProperty("background-image", "none", "important");
+					_cf_bg_set = true;
 				}
 			}
 		}
@@ -870,9 +897,10 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			if (img) {
 				return `<img src="${frappe.utils.escape_html(img)}" class="ev-meta-avatar ev-meta-avatar--img" title="${frappe.utils.escape_html(fullname || user)}">`;
 			}
-			// Color-coded letter avatar
+			// Color-coded letter avatar — guard against empty user (charCodeAt → NaN)
 			const colors = ["#e53935","#8e24aa","#1565c0","#00838f","#2e7d32","#ef6c00","#6d4c41","#546e7a"];
-			const bg = colors[(user || "").charCodeAt(0) % colors.length];
+			const code = (user || " ").charCodeAt(0) || 0;
+			const bg = colors[code % colors.length];
 			return `<span class="ev-meta-avatar" style="background:${bg}" title="${frappe.utils.escape_html(fullname || user)}">${frappe.utils.escape_html(initials)}</span>`;
 		};
 
@@ -906,6 +934,182 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		`;
 		this._meta_html_cache?.set(_cache_key, _html);
 		TD.innerHTML = _html;
+	}
+
+	/**
+	 * Group _user_tags, _comments, _assign, _liked_by, docstatus, idx into a single
+	 * virtual "_social" column. Mirrors _inject_meta_column() pattern exactly.
+	 */
+	_inject_social_column() {
+		if (this._master_columns.some(c => c.data === "_social")) return;
+
+		const SOCIAL_FIELDS = new Set(["_user_tags", "_comments", "_assign", "_liked_by", "docstatus", "idx"]);
+		if (!this._master_columns.some(c => SOCIAL_FIELDS.has(c.data))) return;
+
+		const first_idx = this._master_columns.findIndex(c => SOCIAL_FIELDS.has(c.data));
+		if (first_idx < 0) return;
+
+		this._master_columns = this._master_columns.filter(c => !SOCIAL_FIELDS.has(c.data));
+
+		this._master_columns.splice(first_idx, 0, {
+			data:            "_social",
+			title:           "Activity",
+			readOnly:        true,
+			_readonly:       true,
+			_is_social_col:  true,
+			width:           180,
+			renderer:        "text",
+			className:       "htDimmed",
+		});
+
+		SOCIAL_FIELDS.forEach(f => this._hidden_col_keys.add(f));
+		this.columns = this._master_columns.filter(c => !this._hidden_col_keys.has(c.data));
+	}
+
+	/**
+	 * Render the combined social cell.
+	 * Row 1: docstatus badge + assigned avatars + idx
+	 * Row 2: tags pill + like count + comment count
+	 * Clicking ♥ toggles like inline; clicking avatars/tags opens frappe dialogs.
+	 */
+	_render_social_cell(TD, row_data) {
+		if (!row_data) { TD.textContent = ""; return; }
+
+		// Cache key covers all 6 fields — any change invalidates
+		const _ck = `${row_data.name}|${row_data.docstatus}|${row_data.idx}|${row_data._user_tags || ""}|${(row_data._assign || "").substring(0, 60)}|${(row_data._liked_by || "").substring(0, 60)}|${(row_data._comments || "").substring(0, 20)}`;
+		const _cached = this._social_html_cache?.get(_ck);
+		if (_cached) { TD.innerHTML = _cached; return; }
+
+		const _esc = s => frappe.utils.escape_html(String(s ?? ""));
+
+		// ── Reusable avatar builder (same colors as meta col) ─────────────
+		const _colors = ["#e53935","#8e24aa","#1565c0","#00838f","#2e7d32","#ef6c00","#6d4c41","#546e7a"];
+		const _avatar = (u) => {
+			const info = frappe.boot?.user_info?.[u];
+			const name = info?.fullname || u;
+			const code = (u || " ").charCodeAt(0) || 0;
+			if (info?.image) return `<img src="${_esc(info.image)}" class="ev-sc-av ev-sc-av--img" title="${_esc(name)}">`;
+			return `<span class="ev-sc-av" style="background:${_colors[code % _colors.length]}" title="${_esc(name)}">${_esc(name.substring(0, 1).toUpperCase())}</span>`;
+		};
+
+		// ── docstatus ────────────────────────────────────────────────────
+		const ds = row_data.docstatus ?? 0;
+		const DS_MAP = ["Draft", "Submitted", "Cancelled"];
+		const ds_cls = ["ev-sc-ds--draft", "ev-sc-ds--submitted", "ev-sc-ds--cancelled"];
+
+		// ── Assigned To: ["Administrator"] ───────────────────────────────
+		let assigned = [];
+		try { assigned = JSON.parse(row_data._assign || "[]"); } catch(_) {}
+		const av_html = assigned.slice(0, 3).map(_avatar).join("")
+			+ (assigned.length > 3 ? `<span class="ev-sc-av ev-sc-av--more">+${assigned.length - 3}</span>` : "");
+
+		// ── Tags: ",Just" → ["Just"] ─────────────────────────────────────
+		let tags = [];
+		try { tags = (row_data._user_tags || "").split(",").map(t => t.trim()).filter(Boolean); } catch(_) {}
+		const tags_html = tags.length
+			? `<span class="ev-sc-tag" data-sc="tags" data-name="${_esc(row_data.name)}" title="${_esc(tags.join(", "))}">${_esc(tags[0])}${tags.length > 1 ? `<span class="ev-sc-tag-more">+${tags.length - 1}</span>` : ""}</span>`
+			: `<span class="ev-sc-tag-empty" data-sc="tags" data-name="${_esc(row_data.name)}" title="Add tag">🏷</span>`;
+
+		// ── Liked By: ["user1@gmail.com"] ─────────────────────────────────
+		let liked = [];
+		try { liked = JSON.parse(row_data._liked_by || "[]"); } catch(_) {}
+		const me_liked = liked.includes(frappe.session?.user);
+		const like_html = `<span class="ev-sc-like${me_liked ? " ev-sc-like--on" : ""}" data-sc="like" data-name="${_esc(row_data.name)}" data-doctype="${_esc(this.doctype)}" data-liked="${me_liked ? "1" : "0"}" title="${me_liked ? "Unlike" : "Like"}">♥ ${liked.length}</span>`;
+
+		// ── Comments: JSON array count ────────────────────────────────────
+		let cc = 0;
+		try { const c = JSON.parse(row_data._comments || "[]"); cc = Array.isArray(c) ? c.length : 0; } catch(_) {}
+		const comment_html = `<span class="ev-sc-comment" data-sc="comment" data-name="${_esc(row_data.name)}" title="${cc} comment(s)">💬${cc > 0 ? " " + cc : ""}</span>`;
+
+		// ── idx ───────────────────────────────────────────────────────────
+		const idx_html = row_data.idx != null ? `<span class="ev-sc-idx">#${row_data.idx}</span>` : "";
+
+		const _html = `<div class="ev-social-cell" data-name="${_esc(row_data.name)}">
+			<div class="ev-sc-row ev-sc-row--top">
+				<span class="ev-sc-ds ${ds_cls[ds] || ds_cls[0]}">${DS_MAP[ds] || "Draft"}</span>
+				${av_html ? `<span class="ev-sc-avatars" data-sc="assign" data-name="${_esc(row_data.name)}" title="Click to manage assignments">${av_html}</span>` : `<span class="ev-sc-assign-empty" data-sc="assign" data-name="${_esc(row_data.name)}" title="Assign to someone">👤</span>`}
+				${idx_html}
+			</div>
+			<div class="ev-sc-row ev-sc-row--bottom">
+				${tags_html}
+				${like_html}
+				${comment_html}
+			</div>
+		</div>`;
+
+		this._social_html_cache?.set(_ck, _html);
+		TD.innerHTML = _html;
+	}
+
+	/** Handle CRUD actions for social column cells (like toggle, assign, tags). */
+	_bind_social_clicks() {
+		this.$hot_container.on("click.social", "[data-sc]", (e) => {
+			const $el = $(e.target).closest("[data-sc]");
+			const action = $el.data("sc");
+			const name   = $el.data("name");
+			if (!name) return;
+			e.stopPropagation();
+
+			if (action === "like") {
+				const add = $el.data("liked") === "1" ? "No" : "Yes";
+				frappe.call({
+					method: "frappe.desk.like.toggle_like",
+					args: { doctype: this.doctype, name, add },
+					callback: (r) => {
+						// Update row_data in-place and clear cache
+						const row = this.list_view.data?.find(d => d.name === name);
+						if (row) {
+							row._liked_by = r.message;
+							const _ck_prefix = `${name}|`;
+							[...this._social_html_cache.keys()]
+								.filter(k => k.startsWith(_ck_prefix))
+								.forEach(k => this._social_html_cache.delete(k));
+							this.hot?.render();
+						}
+					},
+				});
+
+			} else if (action === "assign") {
+				frappe.call({
+					method: "frappe.desk.form.assign_to.get",
+					args: { doctype: this.doctype, name },
+					callback: (r) => {
+						const assigned = r.message || [];
+						const d = new frappe.ui.Dialog({
+							title: __("Assigned To"),
+							fields: [{ label: __("Assign To"), fieldname: "user", fieldtype: "Link", options: "User" }],
+							primary_action_label: __("Assign"),
+							primary_action: (vals) => {
+								if (!vals.user) return;
+								frappe.call({
+									method: "frappe.desk.form.assign_to.add",
+									args: { doctype: this.doctype, name, assign_to: [vals.user], bulk_assign: false },
+									callback: () => { d.hide(); this.list_view.refresh(); },
+								});
+							},
+						});
+						d.show();
+					},
+				});
+
+			} else if (action === "tags") {
+				frappe.prompt(
+					{ fieldtype: "Data", fieldname: "tag", label: __("Tag"), description: __("Add a tag to this record") },
+					(vals) => {
+						if (!vals.tag) return;
+						frappe.call({
+							method: "frappe.desk.tags.add_tag",
+							args: { dt: this.doctype, dn: name, tag: vals.tag.trim() },
+							callback: () => this.list_view.refresh(),
+						});
+					},
+					__("Add Tag"), __("Add")
+				);
+
+			} else if (action === "comment") {
+				frappe.set_route("Form", this.doctype, name);
+			}
+		});
 	}
 
 	/**
@@ -2119,8 +2323,13 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	_toggle_tree_group(key) {
 		if (!this._tree_groups?.has(key)) return;
 		const group = this._tree_groups.get(key);
+		const n_children = group.length - 1;
 		if (this._expanded_keys.has(key)) {
 			this._expanded_keys.delete(key);
+			const idx = this.list_view.data.findIndex(
+				r => r._tree_is_header && r._tree_group_key === key
+			);
+			if (idx >= 0) this._fix_tree_formulas_on_collapse(idx, n_children);
 			this.list_view.data = this.list_view.data.filter(
 				r => !(r._tree_is_child && r._tree_group_key === key)
 			);
@@ -2131,11 +2340,66 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			);
 			if (idx >= 0) {
 				this.list_view.data.splice(idx + 1, 0, ...group.slice(1));
+				this._fix_tree_formulas_on_expand(idx, n_children);
 			}
 		}
 		this.matrix = this.data_manager.to_matrix(this.list_view.data, this.columns);
+		this.formula_bridge.reload(this.matrix);
 		this.hot.loadData(this.list_view.data);
 		this.hot.render();
+	}
+
+	// Shift all cell row references in a formula string by `shift` (positive or negative).
+	// E.g. _shift_all_row_refs("=F5-G5", 3) → "=F8-G8"
+	_shift_all_row_refs(formula, shift) {
+		if (!shift || !formula) return formula;
+		return formula.replace(/([A-Z]+)(\d+)/g, (_m, col, row_str) => {
+			const new_row = Math.max(1, parseInt(row_str, 10) + shift);
+			return col + new_row;
+		});
+	}
+
+	// On expand: give children the header's formula (offset per child), then shift
+	// all rows that were pushed down by n_children.
+	_fix_tree_formulas_on_expand(header_idx, n_children) {
+		const formula_cols = this.columns?.filter(c => c._is_formula_col);
+		if (!formula_cols?.length) return;
+		const header_row = this.list_view.data[header_idx];
+		for (const fc of formula_cols) {
+			const prop = fc.data;
+			const hf = header_row?.[prop];
+			const hf_is_formula = hf && this.formula_bridge?.is_formula(hf);
+			// 1. Fill children with header formula shifted by i+1
+			if (hf_is_formula) {
+				for (let i = 0; i < n_children; i++) {
+					const child = this.list_view.data[header_idx + 1 + i];
+					if (child) child[prop] = this._shift_all_row_refs(hf, i + 1);
+				}
+			}
+			// 2. Shift rows that moved down past the inserted children
+			for (let r = header_idx + 1 + n_children; r < this.list_view.data.length; r++) {
+				const row = this.list_view.data[r];
+				const f = row?.[prop];
+				if (!f || !this.formula_bridge?.is_formula(f)) continue;
+				row[prop] = this._shift_all_row_refs(f, n_children);
+			}
+		}
+	}
+
+	// On collapse: shift rows that are about to move up by n_children back by -n_children.
+	// Must run BEFORE children are filtered out of list_view.data.
+	_fix_tree_formulas_on_collapse(header_idx, n_children) {
+		const formula_cols = this.columns?.filter(c => c._is_formula_col);
+		if (!formula_cols?.length) return;
+		for (const fc of formula_cols) {
+			const prop = fc.data;
+			for (let r = header_idx + 1 + n_children; r < this.list_view.data.length; r++) {
+				const row = this.list_view.data[r];
+				const f = row?.[prop];
+				if (!f || !this.formula_bridge?.is_formula(f)) continue;
+				row[prop] = this._shift_all_row_refs(f, -n_children);
+			}
+		}
 	}
 
 	/**
@@ -2358,7 +2622,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	 */
 	apply_field_selection(fieldnames, { silent = false } = {}) {
 		// Virtual column keys that must never reach the Frappe server
-		const VIRTUAL_KEYS = new Set(["_meta", "_is_meta_col", "_is_join_col", "_is_lookup_col", "_is_formula_col"]);
+		const VIRTUAL_KEYS = new Set(["_meta", "_is_meta_col", "_social", "_is_social_col", "_is_join_col", "_is_lookup_col", "_is_formula_col"]);
 		// Separate CT fields (table__child) from regular Frappe fields; exclude virtual keys
 		// Also exclude _slk_* lookup cols and any other underscore-prefixed virtual keys
 		const regular = fieldnames.filter(f =>
@@ -2381,6 +2645,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this._master_columns = [...this.columns];
 		// Re-group meta fields into virtual _meta column if present
 		this._inject_meta_column();
+		this._inject_social_column();
 		// Re-inject Smart Lookup columns into _master_columns after column rebuild
 		if (this._applied_lookups?.length) {
 			const existing_keys = new Set(this._master_columns.map(c => c.data));
@@ -2561,6 +2826,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		frappe.views.excel.formula_manager?.clear();
 		// Perf: rebuild lookup maps used by afterRenderer hot path
 		this._meta_html_cache?.clear();
+		this._social_html_cache?.clear();
 		this._tree_parent_map = new Map();
 		new_data.forEach((row, i) => { if (row._tree_is_header) this._tree_parent_map.set(row._tree_group_key, i); });
 		this.hot.loadData(new_data);
@@ -2778,7 +3044,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 				<button class="ev-iib-save btn btn-xs btn-primary">${__("Save Row")}</button>
 				<button class="ev-iib-cancel btn btn-xs">${__("✕ Cancel")}</button>
 			</div>
-		`).appendTo(this.$hot_container);
+		`).prependTo(this.$grid_main);
 
 		this.$inline_insert_bar.on("click", ".ev-iib-save",      () => this._finish_inline_insert());
 		this.$inline_insert_bar.on("click", ".ev-iib-cancel",    () => this._cancel_inline_insert());

@@ -2,9 +2,53 @@
 Intent Classification for GenBI.
 
 Uses sentence-transformers for semantic similarity matching against intent templates.
+Pre-processing: Hinglish normalization + multi-intent detection.
 """
 
+import re
 from typing import Optional
+
+# Hinglish → English signal map (intent-relevant words only, not full translation)
+_HINGLISH: dict[str, str] = {
+	"dikhao": "show", "dikha": "show", "dekho": "show",
+	"batao": "explain", "bata": "explain", "samjhao": "explain",
+	"banao": "create", "bana": "create",
+	"kaise": "how", "kya": "what", "kitne": "how many", "kitna": "how many",
+	"kyun": "why", "kaun": "which",
+	"kaise link hai": "how linked", "kaise juda hai": "how connected",
+	"kaise connected hai": "how connected",
+	"ka connection": "connection of", "ka relation": "relation of",
+	"se link": "linked to", "se juda": "connected to",
+	"aur dikhao": "show more", "aur batao": "show more",
+	"doosra": "different", "alag": "different", "aur": "and",
+}
+
+# Multi-intent split patterns — "find X and explain it", "show path then build"
+_MULTI_INTENT_SPLIT = re.compile(
+	r"\b(and then|then|and also|also|, then|, and)\b", re.I
+)
+
+
+def _normalize_hinglish(query: str) -> str:
+	"""Replace Hinglish words with English equivalents for intent classification."""
+	q = query
+	# Longer phrases first to avoid partial replacements
+	for hi, en in sorted(_HINGLISH.items(), key=lambda x: -len(x[0])):
+		q = re.sub(r"\b" + re.escape(hi) + r"\b", en, q, flags=re.I)
+	return q
+
+
+def _extract_primary_intent_query(query: str) -> tuple[str, str | None]:
+	"""Split multi-intent query into primary and secondary.
+
+	"find path to Sales Order and explain it" →
+	    primary: "find path to Sales Order"
+	    secondary: "explain it"
+	"""
+	parts = _MULTI_INTENT_SPLIT.split(query, maxsplit=1)
+	if len(parts) >= 3:  # [before, separator, after]
+		return parts[0].strip(), parts[2].strip()
+	return query, None
 
 # Lazy imports - loaded only when first chat is opened
 _embedder = None
@@ -22,7 +66,18 @@ def _ensure_model_loaded():
 		from sentence_transformers import SentenceTransformer, util
 
 		# Use lightweight model (~80MB)
-		_embedder = SentenceTransformer("all-MiniLM-L6-v2")
+		import torch
+		_device = "cuda" if torch.cuda.is_available() else "cpu"
+		_embedder = SentenceTransformer("all-MiniLM-L6-v2", device=_device)
+
+		if _device == "cpu":
+			torch.set_num_threads(2)
+			torch.quantization.quantize_dynamic(
+				_embedder[0].auto_model,
+				{torch.nn.Linear},
+				dtype=torch.qint8,
+				inplace=True,
+			)
 
 		# Precompute intent template embeddings
 		intent_templates = {
@@ -33,18 +88,20 @@ def _ensure_model_loaded():
 				"link to",
 				"show connection",
 				"how to reach",
+				"find connection between",
 			],
 			"EXPLAIN": [
-				"why connected",
-				"explain relationship",
-				"what does mean",
-				"which is better",
+				"why are they connected",
+				"explain this relationship",
+				"what does this connection mean",
+				"which path is better",
 				"how are they related",
-				"tell me about connection",
+				"tell me about this connection",
 			],
 			"BUILD_CANVAS": [
 				"build canvas",
-				"show me",
+				"create canvas",
+				"show me canvas",
 				"create view",
 				"grouped by",
 				"with fields",
@@ -97,7 +154,9 @@ class IntentClassifier:
 		"""Initialize intent classifier (lazy loads model on first use)."""
 		pass
 
-	def classify(self, query: str, conversation_context: Optional[dict] = None) -> tuple[str, float]:
+	def classify(
+		self, query: str, conversation_context: Optional[dict] = None
+	) -> tuple[str, float, str | None]:
 		"""
 		Classify user query intent.
 
@@ -106,15 +165,23 @@ class IntentClassifier:
 		    conversation_context: Optional conversation context for follow-up detection
 
 		Returns:
-		    (intent: str, confidence: float)
+		    (intent: str, confidence: float, secondary_intent: str | None)
+		    secondary_intent is set when query has two chained intents:
+		    "find path to Sales Order and explain it" → ("FIND_PATH", 0.9, "EXPLAIN")
 		"""
 		# Lazy load model
 		_ensure_model_loaded()
 
 		from sentence_transformers import util
 
-		# Encode query
-		query_embedding = _embedder.encode(query, convert_to_tensor=True)
+		# Step 1: Hinglish normalization
+		normalized = _normalize_hinglish(query)
+
+		# Step 2: Multi-intent detection — classify primary only, carry secondary
+		primary_query, secondary_query = _extract_primary_intent_query(normalized)
+
+		# Encode primary query
+		query_embedding = _embedder.encode(primary_query, convert_to_tensor=True)
 
 		best_intent = None
 		best_score = 0.0
@@ -149,8 +216,22 @@ class IntentClassifier:
 					best_score = 0.9
 
 		# Default to FIND_PATH if confidence too low
-		if best_score < 0.4:
+		# BUILD_CANVAS needs high confidence (≥0.65) to avoid false positives on journey queries
+		if best_score < 0.4 or (best_intent == "BUILD_CANVAS" and best_score < 0.65):
 			best_intent = "FIND_PATH"
 			best_score = 0.5
 
-		return best_intent, round(best_score, 2)
+		# Classify secondary intent if multi-intent query was detected
+		secondary_intent = None
+		if secondary_query:
+			sec_embedding = _embedder.encode(secondary_query, convert_to_tensor=True)
+			sec_best_intent, sec_best_score = None, 0.0
+			for intent, intent_embedding in _intent_embeddings.items():
+				score = util.cos_sim(sec_embedding, intent_embedding).item()
+				if score > sec_best_score:
+					sec_best_score = score
+					sec_best_intent = intent
+			if sec_best_score >= 0.4 and sec_best_intent != best_intent:
+				secondary_intent = sec_best_intent
+
+		return best_intent, round(best_score, 2), secondary_intent
