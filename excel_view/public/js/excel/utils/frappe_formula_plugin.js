@@ -71,7 +71,82 @@ class AsyncFormulaManager {
 		this._TTL          = ttl;
 		this._ERR_COOLDOWN = errCooldown;
 		this._batch_timer  = null;
+
+		// ── Period state (used by PERIOD_START / PERIOD_END formula functions) ──
+		this._period = this._compute_period("this_month");
 	}
+
+	// ── Period management ─────────────────────────────────────────────────────
+
+	_compute_period(key) {
+		const today = frappe.datetime.get_today();   // "YYYY-MM-DD"
+		const [y, m] = today.split("-").map(Number);
+		const pad = (n) => String(n).padStart(2, "0");
+
+		// Last day of a month
+		const last_day = (yr, mo) => new Date(yr, mo, 0).getDate();
+
+		const qtr    = Math.ceil(m / 3);
+		const qStart = (qtr - 1) * 3 + 1;
+		const qEnd   = qStart + 2;
+
+		const lm     = m === 1 ? 12 : m - 1;
+		const lmY    = m === 1 ? y - 1 : y;
+
+		const periods = {
+			today:        { from: today, to: today, label: __("Today") },
+			this_week: (() => {
+				const d = new Date(today);
+				const day = d.getDay() || 7;
+				const mon = new Date(d); mon.setDate(d.getDate() - day + 1);
+				const sun = new Date(mon); sun.setDate(mon.getDate() + 6);
+				return {
+					from:  mon.toISOString().slice(0, 10),
+					to:    sun.toISOString().slice(0, 10),
+					label: __("This Week"),
+				};
+			})(),
+			this_month:   { from: `${y}-${pad(m)}-01`, to: `${y}-${pad(m)}-${last_day(y, m)}`,   label: __("This Month") },
+			last_month:   { from: `${lmY}-${pad(lm)}-01`, to: `${lmY}-${pad(lm)}-${last_day(lmY, lm)}`, label: __("Last Month") },
+			this_quarter: { from: `${y}-${pad(qStart)}-01`, to: `${y}-${pad(qEnd)}-${last_day(y, qEnd)}`, label: __("This Quarter") },
+			last_quarter: (() => {
+				const pq = qtr === 1 ? 4 : qtr - 1;
+				const pqY = qtr === 1 ? y - 1 : y;
+				const pqS = (pq - 1) * 3 + 1;
+				const pqE = pqS + 2;
+				return { from: `${pqY}-${pad(pqS)}-01`, to: `${pqY}-${pad(pqE)}-${last_day(pqY, pqE)}`, label: __("Last Quarter") };
+			})(),
+			this_year:    { from: `${y}-01-01`, to: `${y}-12-31`, label: __("This Year") },
+			last_year:    { from: `${y - 1}-01-01`, to: `${y - 1}-12-31`, label: __("Last Year") },
+		};
+		return periods[key] || periods["this_month"];
+	}
+
+	/**
+	 * Change the active period and invalidate all formula cache.
+	 * @param {string} key  One of: today, this_week, this_month, last_month,
+	 *                              this_quarter, last_quarter, this_year, last_year, custom
+	 * @param {string} [from_date]  Required when key="custom"
+	 * @param {string} [to_date]    Required when key="custom"
+	 */
+	set_period(key, from_date, to_date) {
+		if (key === "custom") {
+			this._period = { from: from_date, to: to_date, label: __("Custom") };
+		} else {
+			this._period = this._compute_period(key);
+		}
+		// Wipe all cached values — period change affects every FRAPPE_SUM with date filters
+		this._cache.clear();
+		this._pending.clear();
+		if (this._rerender) this._rerender();
+	}
+
+	/** Current period start date string "YYYY-MM-DD". */
+	get period_start() { return this._period.from; }
+	/** Current period end date string "YYYY-MM-DD". */
+	get period_end()   { return this._period.to;   }
+	/** Human label for current period (e.g. "This Month"). */
+	get period_label() { return this._period.label; }
 
 	/** Wire the active HyperFormula instance (called by ExcelBoard after init). */
 	set_hf(hf) {
@@ -282,6 +357,24 @@ class FrappeFunctionPlugin extends FunctionPlugin {
 		);
 	}
 
+	// ── PERIOD_START / PERIOD_END ────────────────────────────────────────────
+	// Synchronous — no network call, just reads current period from formula_manager.
+	// Usage: =FRAPPE_SUM("Sales Order","grand_total","ev_sales_person",A2,"transaction_date >=",PERIOD_START(),"transaction_date <=",PERIOD_END())
+
+	period_start(ast, state) {
+		return this.runFunction(ast.args, state, this.metadata("PERIOD_START"), () => {
+			return frappe.views.excel.formula_manager?.period_start
+				|| frappe.datetime.month_start();
+		});
+	}
+
+	period_end(ast, state) {
+		return this.runFunction(ast.args, state, this.metadata("PERIOD_END"), () => {
+			return frappe.views.excel.formula_manager?.period_end
+				|| frappe.datetime.month_end();
+		});
+	}
+
 	// ── FRAPPE_SUM ────────────────────────────────────────────────────────────
 
 	frappe_sum(ast, state) {
@@ -289,14 +382,13 @@ class FrappeFunctionPlugin extends FunctionPlugin {
 			ast.args,
 			state,
 			this.metadata("FRAPPE_SUM"),
-			(doctype, fieldname, fk1, fv1, fk2, fv2, fk3, fv3) => {
+			(doctype, fieldname, fk1, fv1, fk2, fv2, fk3, fv3, fk4, fv4) => {
 				doctype   = _s(doctype);
 				fieldname = _s(fieldname);
 
 				if (!doctype || !fieldname) return "#ARG!";
 
-				const filters = _build_filters(fk1, fv1, fk2, fv2, fk3, fv3);
-				const key = `FRAPPE_SUM:${doctype}:${fieldname}:${JSON.stringify(filters)}`;
+				const key = `FRAPPE_SUM:${doctype}:${fieldname}:${_s(fk1)}:${_s(fv1)}:${_s(fk2)}:${_s(fv2)}:${_s(fk3)}:${_s(fv3)}:${_s(fk4)}:${_s(fv4)}`;
 
 				return this._fm.getOrFetch(
 					key,
@@ -308,7 +400,7 @@ class FrappeFunctionPlugin extends FunctionPlugin {
 									doctype,
 									fieldname,
 									aggr_type: "sum",
-									fk1, fv1, fk2, fv2, fk3, fv3,
+									fk1, fv1, fk2, fv2, fk3, fv3, fk4, fv4,
 								},
 							})
 							.then((r) => r.message?.value ?? 0),
@@ -565,8 +657,17 @@ FrappeFunctionPlugin.implementedFunctions = {
 	},
 	FRAPPE_SUM: {
 		method:     "frappe_sum",
-		// doctype, fieldname, then up to 3 filter key/value pairs
-		parameters: [_S, _S, _An, _An, _An, _An, _An, _An],
+		// doctype, fieldname, then up to 4 filter key/value pairs (fk4/fv4 for date range)
+		parameters: [_S, _S, _An, _An, _An, _An, _An, _An, _An, _An],
+	},
+	// Synchronous period helpers — no network call
+	PERIOD_START: {
+		method:     "period_start",
+		parameters: [],
+	},
+	PERIOD_END: {
+		method:     "period_end",
+		parameters: [],
 	},
 	FRAPPE_COUNT: {
 		method:     "frappe_count",

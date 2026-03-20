@@ -66,13 +66,21 @@ frappe.views.excel.ChartManager = class ChartManager {
 		});
 	}
 
+	/** Return the data for the currently active sheet (report/pivot/blank or base). */
+	_get_sheet_data() {
+		const active = this.board.sheet_manager?.get_current();
+		if (active?.data?.length && (!active._data_is_stale || active.pivot_config)) return active.data;
+		if (!active) return this.board.list_view?.data || [];
+		return this.board.list_view?.data || [];
+	}
+
 	/**
-	 * Re-compute labels/datasets from current board.list_view.data,
+	 * Re-compute labels/datasets from the active sheet's data,
 	 * using the overlay's saved x_key / y_keys / row_limit.
 	 * Updates overlay.cfg AND the stored entry in board.chart_overlays.
 	 */
 	_rebuild_overlay_data(overlay) {
-		const data = this.board.list_view?.data || [];
+		const data = this._get_sheet_data();
 		const { x_key, y_keys, row_limit } = overlay.cfg;
 		if (!x_key || !y_keys?.length) return;
 		const rows    = row_limit > 0 ? data.slice(0, row_limit) : data;
@@ -102,7 +110,7 @@ frappe.views.excel.ChartManager = class ChartManager {
 	/** @param {Object} [prefill] - existing overlay cfg for edit mode */
 	_build_dialog(prefill = null) {
 		const cols = this.board.columns || [];
-		const data  = this.board.list_view?.data || [];
+		const data  = this._get_sheet_data();
 		const is_edit = !!prefill;
 
 		// X axis options — all columns
@@ -286,7 +294,7 @@ frappe.views.excel.ChartManager = class ChartManager {
 		const title     = this.$modal.find(".ev-chart-title").val() || __("Chart");
 		const limit     = parseInt(this.$modal.find(".ev-cd-row-limit").val()) || 50;
 		const aggregate = this.$modal.find(".ev-cd-aggregate").is(":checked");
-		const data      = this.board.list_view?.data || [];
+		const data      = this._get_sheet_data();
 		// Exclude tree child rows (virtual rows — their parent header already has the summary)
 		const base_rows = data.filter(r => !r._tree_is_child);
 		const rows      = limit > 0 ? base_rows.slice(0, limit) : base_rows;

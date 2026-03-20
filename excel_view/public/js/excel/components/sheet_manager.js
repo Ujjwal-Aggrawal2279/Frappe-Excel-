@@ -189,6 +189,9 @@ frappe.views.excel.SheetManager = class SheetManager {
 		const next = this._sheets.get(id);
 		if (!next) return;
 
+		// Recompute pivot sheet from live source data on every tab switch
+		if (next.pivot_config) this._recompute_pivot_sheet(next);
+
 		this._active_id = id;
 		this._render_tabs();
 		this._hide_ilk_banner();
@@ -247,7 +250,12 @@ frappe.views.excel.SheetManager = class SheetManager {
 	_auto_persist_sheets() {
 		const doctype = this.board?.doctype;
 		if (!doctype) return;
-		frappe.model.user_settings.save(doctype, "excel_sheets", this.serialize());
+		const serialized = this.serialize();
+		// Synchronously patch in-memory cache BEFORE the async update() call so
+		// concurrent saves (smart_lookups, cf_rules, etc.) don't overwrite with stale data.
+		if (!frappe.model.user_settings[doctype]) frappe.model.user_settings[doctype] = {};
+		frappe.model.user_settings[doctype].excel_sheets = serialized;
+		frappe.model.user_settings.update(doctype, frappe.model.user_settings[doctype]);
 	}
 
 	serialize() {
@@ -265,10 +273,18 @@ frappe.views.excel.SheetManager = class SheetManager {
 				filters: s.filters,
 				sort_by: s.sort_by,
 				lookup_cols: s.lookup_cols,
-				report_meta: s.report_meta || null,
+				// Strip _controls (Frappe UI objects) — not JSON-serializable; rebuilt by filter bar on restore.
+			report_meta: s.report_meta ? {
+				name: s.report_meta.name,
+				filter_defs: s.report_meta.filter_defs,
+				current_filters: s.report_meta.current_filters,
+			} : null,
+				pivot_config: s.pivot_config || null,
 			};
-			// Persist blank sheet data (capped at 200 rows to avoid large payloads)
-			if (s.is_blank && s.data?.length) {
+			// Pivot sheets: config only — data recomputed on restore.
+			// Report sheets: report_meta saved; data re-fetched on restore (auto-refresh).
+			// Plain blank sheets (CSV/JSON import): persist up to 200 rows.
+			if (s.is_blank && s.data?.length && !s.pivot_config && !s.report_meta?.name) {
 				entry.blank_data = s.data.slice(0, 200);
 			}
 			return entry;
@@ -301,13 +317,19 @@ frappe.views.excel.SheetManager = class SheetManager {
 				sort_by: cfg.sort_by || null,
 				lookup_cols: cfg.lookup_cols || [],
 				report_meta: cfg.report_meta || null,
+				pivot_config: cfg.pivot_config || null,
 			});
 			if (cfg.is_blank) {
-				// Restore saved blank data, or generate fresh empty rows.
-				// Mark as stale so _reapply_smart_lookups skips the live-data
-				// path and fetches fresh data from the source instead.
-				s.data = cfg.blank_data?.length ? cfg.blank_data : this._blank_data();
-				if (cfg.blank_data?.length) s._data_is_stale = true;
+				if (cfg.pivot_config) {
+					// Pivot sheet: start with empty data; recomputed after all sheets are restored.
+					s.data = this._blank_data();
+				} else {
+					// Regular blank sheet: restore saved data or generate empty rows.
+					s.data = cfg.blank_data?.length ? cfg.blank_data : this._blank_data();
+					// Report sheets never save blank_data → mark stale so filter bar auto-refreshes
+					// and so _reapply_smart_lookups won't use blank rows for the join.
+					if (cfg.report_meta?.name || cfg.blank_data?.length) s._data_is_stale = true;
+				}
 			}
 			this._sheets.set(s.id, s);
 		});
@@ -323,6 +345,11 @@ frappe.views.excel.SheetManager = class SheetManager {
 
 		this._render_tabs();
 		this._auto_persist_sheets();
+
+		// Recompute all pivot sheets now that source sheets are registered
+		for (const s of this._sheets.values()) {
+			if (s.pivot_config) this._recompute_pivot_sheet(s);
+		}
 	}
 
 	/**
@@ -697,6 +724,37 @@ frappe.views.excel.SheetManager = class SheetManager {
 		});
 	}
 
+	// ── Pivot recompute ───────────────────────────────────────────────────
+
+	/**
+	 * Recompute a pivot sheet's data from its source sheet's current live data.
+	 * Updates sheet.columns_config + sheet.data in-place (no HOT reload — that
+	 * happens naturally in switch_to / _apply_sheet after this returns).
+	 */
+	_recompute_pivot_sheet(sheet) {
+		const cfg = sheet.pivot_config;
+		if (!cfg) return;
+
+		const src = this._sheets.get(cfg.source_sheet_id);
+		// If source exists but is stale (report not yet refreshed), skip recompute.
+		// Pivot will be recomputed when the user switches to it after source refreshes.
+		if (src && src._data_is_stale) return;
+		const data = src?.data?.length
+			? src.data
+			: (this.board.list_view?.data || []);
+
+		const PivotBuilder = frappe.views.excel.PivotBuilder;
+		if (!PivotBuilder?.compute) return;
+
+		const result = PivotBuilder.compute(data, cfg.row_fields, cfg.col_fields, cfg.val_configs);
+		if (!result) return;
+
+		const { col_configs, data_rows } = PivotBuilder._result_to_hot(result);
+		sheet.columns_config  = col_configs;
+		sheet.data            = data_rows;
+		sheet._data_is_stale  = false; // recomputed fresh — clear stale flag
+	}
+
 	// ── State helpers ─────────────────────────────────────────────────────
 
 	_make_state({ doctype, label, id, is_blank }) {
@@ -716,6 +774,7 @@ frappe.views.excel.SheetManager = class SheetManager {
 			sort_by: null,
 			lookup_cols: [],
 			report_meta: null,
+			pivot_config: null,
 		};
 	}
 };

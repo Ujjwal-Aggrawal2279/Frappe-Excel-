@@ -71,6 +71,27 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 						<svg width="13" height="13" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.4"><circle cx="3" cy="8" r="2.2"/><circle cx="13" cy="3.5" r="2.2"/><circle cx="13" cy="12.5" r="2.2"/><line x1="5.1" y1="7.1" x2="10.9" y2="4.3"/><line x1="5.1" y1="8.9" x2="10.9" y2="11.7"/></svg>
 						${__("Link Sheets")}
 					</button>
+					<div class="ev-qa-sep"></div>
+					<!-- ── Period Picker ──────────────────────────────────── -->
+					<div class="ev-period-wrap">
+						<button class="ev-tb-btn ev-qa-btn ev-period-btn" title="${__("Filter formula aggregates by date period")}">
+							<svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor"><path d="M11 6.5a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1zm-3 0a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1zm-5 3a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1zm3 0a.5.5 0 0 1 .5-.5h1a.5.5 0 0 1 .5.5v1a.5.5 0 0 1-.5.5h-1a.5.5 0 0 1-.5-.5v-1zM3.5 0a.5.5 0 0 1 .5.5V1h8V.5a.5.5 0 0 1 1 0V1h1a2 2 0 0 1 2 2v11a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2V3a2 2 0 0 1 2-2h1V.5a.5.5 0 0 1 .5-.5zM2 2a1 1 0 0 0-1 1v1h14V3a1 1 0 0 0-1-1H2zm13 3H1v9a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1V5z"/></svg>
+							<span class="ev-period-label">${__("This Month")}</span>
+							<svg width="8" height="8" viewBox="0 0 8 8" fill="currentColor" style="margin-left:2px"><path d="M1 2l3 3 3-3"/></svg>
+						</button>
+						<div class="ev-period-dropdown hide">
+							<div class="ev-period-item" data-period="today">${__("Today")}</div>
+							<div class="ev-period-item" data-period="this_week">${__("This Week")}</div>
+							<div class="ev-period-item ev-period-item--active" data-period="this_month">${__("This Month")}</div>
+							<div class="ev-period-item" data-period="last_month">${__("Last Month")}</div>
+							<div class="ev-period-item" data-period="this_quarter">${__("This Quarter")}</div>
+							<div class="ev-period-item" data-period="last_quarter">${__("Last Quarter")}</div>
+							<div class="ev-period-item" data-period="this_year">${__("This Year")}</div>
+							<div class="ev-period-item" data-period="last_year">${__("Last Year")}</div>
+							<div class="ev-period-sep"></div>
+							<div class="ev-period-item" data-period="custom">${__("Custom Range…")}</div>
+						</div>
+					</div>
 				</div>
 
 				<!-- ── Tab Strip ────────────────────────────────────────────── -->
@@ -513,6 +534,44 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		// ── Quick Access actions ────────────────────────────────────────────
 		$w.on("click", ".ev-columns-btn", () => this.board.open_field_picker());
 		$w.on("click.ev-toolbar", ".ev-join-btn", () => this.board._open_join_canvas());
+
+		// ── Period picker ───────────────────────────────────────────────────
+		$w.on("click", ".ev-period-btn", (e) => {
+			e.stopPropagation();
+			$w.find(".ev-period-dropdown").toggleClass("hide");
+		});
+		$w.on("click", ".ev-period-item", (e) => {
+			const period = $(e.currentTarget).data("period");
+			const fm     = frappe.views.excel.formula_manager;
+			if (!fm) return;
+
+			if (period === "custom") {
+				const d = new frappe.ui.Dialog({
+					title: __("Custom Date Range"),
+					fields: [
+						{ fieldname: "from_date", fieldtype: "Date", label: __("From"), reqd: 1 },
+						{ fieldname: "to_date",   fieldtype: "Date", label: __("To"),   reqd: 1 },
+					],
+					primary_action_label: __("Apply"),
+					primary_action({ from_date, to_date }) {
+						fm.set_period("custom", from_date, to_date);
+						$w.find(".ev-period-label").text(`${from_date} → ${to_date}`);
+						$w.find(".ev-period-item").removeClass("ev-period-item--active");
+						$(e.currentTarget).addClass("ev-period-item--active");
+						d.hide();
+					},
+				});
+				d.show();
+			} else {
+				fm.set_period(period);
+				$w.find(".ev-period-label").text(fm.period_label);
+				$w.find(".ev-period-item").removeClass("ev-period-item--active");
+				$(e.currentTarget).addClass("ev-period-item--active");
+			}
+			$w.find(".ev-period-dropdown").addClass("hide");
+		});
+		// Close dropdown on outside click
+		$(document).on("click.ev-period", () => $w.find(".ev-period-dropdown").addClass("hide"));
 
 		// ── Format toggle buttons (bold/italic/wrap/align/valign) ───────────
 		$w.on("click", ".ev-fmt-btn", (e) => {
@@ -1933,6 +1992,7 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 				}
 				: null; // blank/formula sheet — cache is the only option
 		board._applied_lookups.push({
+			src_sheet_id:    src_sheet.id,      // identifies which sheet's data to enrich on restore
 			tgt_sheet_id:    tgt_sheet.id,
 			tgt_sheet_label: tgt_sheet.label,
 			tgt_source,
@@ -1941,7 +2001,11 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 			return_fields,
 			_value_cache:    value_cache,
 		});
-		frappe.model.user_settings.save(board.doctype, "excel_smart_lookups", board._applied_lookups);
+		// Sync-patch to avoid race condition with concurrent saves.
+		const _slk_save = board._applied_lookups.map(({ _fresh_rows: _f, ...rest }) => rest);
+		if (!frappe.model.user_settings[board.doctype]) frappe.model.user_settings[board.doctype] = {};
+		frappe.model.user_settings[board.doctype].excel_smart_lookups = _slk_save;
+		frappe.model.user_settings.update(board.doctype, frappe.model.user_settings[board.doctype]);
 		frappe.show_alert({ message: __(`Added ${return_fields.length} lookup column(s) from ${tgt_sheet.label}`), indicator: "green" }, 3);
 	}
 
@@ -2779,6 +2843,10 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 					sheet.data = data_rows;
 					sheet._data_is_stale = false;
 					this.board.hot.loadData(data_rows);
+					// Re-run any Smart Lookups that enrich this sheet's rows.
+					if (this.board._applied_lookups?.some(c => c.src_sheet_id === sheet.id)) {
+						setTimeout(() => this.board._reapply_smart_lookups(), 0);
+					}
 					frappe.show_alert({ message: __("{0} rows loaded", [result_rows.length]), indicator: "green" }, 2);
 				},
 			});

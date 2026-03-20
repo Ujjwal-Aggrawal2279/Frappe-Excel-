@@ -25,8 +25,8 @@ frappe.views.ExcelView = class ExcelView extends frappe.views.ListView {
 			// { keys, values } format that BaseList.prepare_data expects.
 			this.view = "Report";
 
-			// Larger default page_length for a spreadsheet context
-			this.page_length = frappe.is_large_screen() ? 500 : 100;
+			// Load 100 rows initially; infinite scroll appends 100 more on demand
+			this.page_length = 100;
 
 			// ── Override field list ────────────────────────────────────────────
 			// super.setup_defaults() only loads the user's List View column config
@@ -148,7 +148,9 @@ frappe.views.ExcelView = class ExcelView extends frappe.views.ListView {
 				list_view: this,
 			});
 		} else {
-			this.excel_board.refresh(this.data);
+			// Pass append=true when this is a load-more (start > 0) so
+			// board.refresh() can preserve the current scroll position.
+			this.excel_board.refresh(this.data, { append: this.start > 0 });
 		}
 	}
 

@@ -470,16 +470,13 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 		}).filter(Boolean);
 
 		// ── formula_columns ────────────────────────────────────────────────
-		// Save per-row values keyed by doc name so they survive data reload.
+		// Save formula template string so it can be re-applied on restore.
 		const formula_columns = board.columns
 			.filter(col => col._is_formula_col)
 			.map(col => {
-				const values = {};
-				(board.list_view.data || []).forEach(row => {
-					const v = row[col.data];
-					if (v != null && v !== "") values[row.name] = v;
-				});
-				return { key: col.data, label: col.title, values };
+				const col_idx = board.columns.indexOf(col);
+				const formula_template = board._formula_col_map?.get(col_idx) || null;
+				return { key: col.data, label: col.title, formula_template };
 			});
 
 		// ── filters ────────────────────────────────────────────────────────
@@ -591,26 +588,15 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 			board.hot.updateSettings({ columns: board.columns });
 		}
 
-		// ── 2. Re-add formula columns ──────────────────────────────────────
-		(config.formula_columns || []).forEach(fc => {
-			(board.list_view.data || []).forEach(row => {
-				row[fc.key] = fc.values?.[row.name] ?? "";
-			});
-			const new_col = {
-				data:            fc.key,
-				title:           fc.label,
-				type:            "text",
-				width:           140,
-				_is_formula_col: true,
-			};
-			board.columns.push(new_col);
-			board._master_columns.push(new_col);
-		});
-
+		// ── 2. Re-add formula columns ──────────────────
+		// Use _restore_formula_col_templates: adds columns, rebuilds HF, fills all rows.
 		if ((config.formula_columns || []).length) {
-			board.matrix = board.data_manager.to_matrix(board.list_view.data, board.columns);
-			board.formula_bridge.reload(board.matrix);
-			board.hot.updateSettings({ columns: board.columns });
+			const templates = config.formula_columns.map(fc => ({
+				key:     fc.key,
+				label:   fc.label,
+				formula: fc.formula_template || null,
+			}));
+			board._restore_formula_col_templates(templates);
 		}
 
 		// ── 3. Column widths ───────────────────────────────────────────────

@@ -225,6 +225,12 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			setTimeout(() => this._restore_chart_overlays(saved_charts), 100);
 		}
 
+		// Restore formula column templates from user_settings (no workbook needed)
+		const saved_formula_col_templates = frappe.get_user_settings(this.doctype)?.excel_formula_col_templates;
+		if (Array.isArray(saved_formula_col_templates) && saved_formula_col_templates.length) {
+			this._pending_formula_col_templates = saved_formula_col_templates;
+		}
+
 		// V3.1 — Restore Focus Cell settings
 		const saved_focus = frappe.get_user_settings(this.doctype)?.excel_focus_cell;
 		if (saved_focus) {
@@ -465,6 +471,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			},
 			// i18n
 			language: frappe.boot.lang === "ar" || frappe.boot.lang === "he" ? "ar-AR" : undefined,
+
 		});
 
 		// HOT height:"100%" reads clientHeight at init time — in a flex layout that
@@ -475,6 +482,21 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			const h = this.$hot_container[0].clientHeight;
 			if (h > 0) this.hot.updateSettings({ height: h });
 			this.hot.render();
+
+			// ── Infinite scroll via native scroll on HOT's inner scrollable div ──
+			// afterScrollVertically only fires when HOT has internal scroll.
+			// If all rows fit in the visible area, HOT won't scroll internally.
+			// Instead we listen to the master scrollable container (.wtHolder) or
+			// fall back to the window scroll event.
+			const holder = this.$hot_container[0].querySelector(".wtHolder");
+			const scroll_target = (holder && holder.scrollHeight > holder.clientHeight)
+				? holder
+				: window;
+
+			const on_scroll = () => this._on_scroll_vertical();
+			scroll_target.addEventListener("scroll", on_scroll, { passive: true });
+			// Store reference for cleanup on destroy
+			this._scroll_listener = { target: scroll_target, fn: on_scroll };
 		}, 0);
 	}
 
@@ -1302,6 +1324,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 
 		// Skip our own autofetch writes — they're already in list_view.data, no DB save needed
 		if (source === "autofetch") return;
+		if (source === "fill_scroll") return;  // formula cells written by _fill_new_rows
 
 		// In array-of-objects mode HOT gives [row, fieldname, oldVal, newVal].
 		// formula_bridge needs numeric col indices, so convert.
@@ -1540,6 +1563,130 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		}
 	}
 
+
+	// ── Fill Column ↓ (All Rows) ────────────────────────────────────────
+	// Fills a formula from src_row to every row in the loaded dataset.
+	// Uses HyperFormula copy+paste so relative references (A1 -> A2 -> A3) are
+	// adjusted correctly. Also registers the column in _formula_col_map so
+	// future infinite-scroll appends auto-populate new rows.
+	_fill_column_all_rows(col, src_row = 0) {
+		if (!this.formula_bridge || !this.hot) return;
+
+		const src_formula = this.formula_bridge.get_formula(src_row, col);
+		if (!src_formula) {
+			frappe.show_alert({ message: __("Selected cell has no formula"), indicator: "orange" });
+			return;
+		}
+
+		const hf    = this.formula_bridge.hf;
+		const sheet = this.formula_bridge.sheet_id;
+		const total = this.list_view.data?.length || 0;
+		const prop  = this.columns[col]?.data;
+
+		hf.copy({ start: { sheet, row: src_row, col }, end: { sheet, row: src_row, col } });
+
+		for (let row = 0; row < total; row++) {
+			if (row === src_row) continue;
+			hf.paste({ sheet, row, col });
+			const adjusted = hf.getCellFormula({ sheet, row, col });
+			if (adjusted && prop && this.list_view.data[row]) {
+				this.list_view.data[row][prop] = adjusted;
+			}
+		}
+
+		// Store formula template (not src_row) so _reapply_formula_cols can reuse it
+		this._formula_col_map = this._formula_col_map || new Map();
+		this._formula_col_map.set(col, src_formula);
+		this._save_formula_col_settings();
+
+		this.hot.render();
+		frappe.show_alert({ message: __("Formula filled to {0} rows", [total]), indicator: "green" });
+	}
+
+	// Re-applies all tracked formula columns to rows [from_row, to_row].
+	// _formula_col_map stores col_idx → template_formula_string.
+	// When from_row=0 it does a full re-apply (used after idle refresh).
+	// When from_row=prev_len it fills only newly loaded rows (infinite scroll).
+	_reapply_formula_cols(from_row, to_row) {
+		if (!this.formula_bridge || !this.hot || !this._formula_col_map?.size) return;
+		if (to_row < 0 || from_row > to_row) return;
+
+		const hf    = this.formula_bridge.hf;
+		const sheet = this.formula_bridge.sheet_id;
+		const data  = this.list_view.data;
+		const hot_changes = [];
+
+		for (const [col, template] of this._formula_col_map) {
+			const prop = this.columns[col]?.data;
+			if (!prop || !template) continue;
+
+			// Ensure HF has template in row 0 (source) — needed after a full reload
+			hf.setCellContents({ sheet, row: 0, col }, [[template]]);
+			if (data[0]) {
+				data[0][prop] = template;
+				if (from_row === 0) hot_changes.push([0, prop, template]);
+			}
+
+			// Copy template from row 0, paste to each target row (HF adjusts refs)
+			hf.copy({ start: { sheet, row: 0, col }, end: { sheet, row: 0, col } });
+			const loop_start = from_row === 0 ? 1 : from_row;
+			for (let row = loop_start; row <= to_row; row++) {
+				hf.paste({ sheet, row, col });
+				const adjusted = hf.getCellFormula({ sheet, row, col });
+				if (adjusted && data[row]) {
+					data[row][prop] = adjusted;
+					hot_changes.push([row, prop, adjusted]);
+				}
+			}
+		}
+
+		// setDataAtCell with source 'fill_scroll' → afterRenderer gets formula string
+		// → is_formula()=true → async fetch fires. afterChange ignores this source.
+		if (hot_changes.length) {
+			this.hot.setDataAtCell(hot_changes, 'fill_scroll');
+		}
+	}
+
+	// Restores formula columns from a saved templates array [{key, label, formula}].
+	// Called from workbook apply_config() and on first refresh from user_settings.
+	_restore_formula_col_templates(templates) {
+		if (!templates?.length) return;
+		let added = false;
+		for (const fc of templates) {
+			// Skip if column already exists
+			if (this.columns.find(c => c.data === fc.key)) continue;
+			const new_col = { data: fc.key, title: fc.label, type: 'text', width: 140, _is_formula_col: true };
+			this.columns.push(new_col);
+			if (this._master_columns) this._master_columns.push(new_col);
+			added = true;
+		}
+		if (added) {
+			this.matrix = this.data_manager.to_matrix(this.list_view.data, this.columns);
+			this.formula_bridge.reload(this.matrix);
+			this.hot.updateSettings({ columns: this.columns });
+		}
+		// Register formula templates in the map
+		this._formula_col_map = this._formula_col_map || new Map();
+		for (const fc of templates) {
+			const col_idx = this.columns.findIndex(c => c.data === fc.key);
+			if (col_idx >= 0 && fc.formula) this._formula_col_map.set(col_idx, fc.formula);
+		}
+		// Apply formulas to all currently loaded rows
+		const total = (this.list_view.data?.length || 0) - 1;
+		if (total >= 0) this._reapply_formula_cols(0, total);
+	}
+
+	// Persists formula column templates to user_settings so they survive page reload.
+	_save_formula_col_settings() {
+		if (!this._formula_col_map?.size) return;
+		const templates = [];
+		for (const [col_idx, formula] of this._formula_col_map) {
+			const col = this.columns[col_idx];
+			if (col) templates.push({ key: col.data, label: col.title, formula });
+		}
+		frappe.model.user_settings.save(this.doctype, 'excel_formula_col_templates', templates);
+	}
+
 	// ── Column header formatting (afterGetColHeader hook) ─────────────────────
 	// Applies border stored at format_store key "h_<col>" to the <th> element.
 	_apply_col_header_format(TH, col) {
@@ -1616,6 +1763,81 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		if (new_height != null) this._last_action = { type: "row_resize", size: new_height };
 		// Persist to user_settings so heights survive refresh
 		this._schedule_row_heights_save();
+	}
+
+	/**
+	 * Infinite scroll — triggered by HOT's afterScrollVertically.
+	 * Loads the next 100 rows when user scrolls within 20 rows of the bottom.
+	 *
+	 * Guards:
+	 *   - Debounced (150ms) to avoid rapid-fire on momentum scroll
+	 *   - `_loading_more` flag prevents concurrent fetches
+	 *   - Stops when server returns fewer rows than page_length (no more data)
+	 */
+	_on_scroll_vertical() {
+		if (this._loading_more || this._no_more_data || !this.hot) return;
+
+		const lv           = this.list_view;
+		const total_loaded = lv.data?.length || 0;
+
+		// Pixel-based bottom detection — works whether HOT scrolls internally
+		// or the page/window scrolls. Check the HOT container's visibility.
+		const container = this.$hot_container?.[0];
+		if (!container) return;
+
+		// Try HOT inner holder first, fall back to container itself
+		const holder     = container.querySelector(".wtHolder") || container;
+		const scrollable = holder.scrollHeight > holder.clientHeight ? holder : window;
+
+		let near_bottom;
+		if (scrollable === window) {
+			// Window scroll: check if HOT container bottom is close to viewport bottom
+			const rect     = container.getBoundingClientRect();
+			const vh       = window.innerHeight;
+			near_bottom    = rect.bottom - vh < 200;   // within 200px of viewport bottom
+		} else {
+			// HOT internal scroll
+			near_bottom = holder.scrollHeight - holder.scrollTop - holder.clientHeight < 200;
+		}
+
+		if (!near_bottom) return;
+
+		clearTimeout(this._scroll_load_timer);
+		this._scroll_load_timer = setTimeout(() => {
+			if (this._loading_more || this._no_more_data) return;
+
+			this._loading_more = true;
+			this._show_load_more_indicator(true);
+
+			const prev_len = lv.data?.length || 0;
+			lv.start       = prev_len;
+			this._prev_append_len = prev_len;   // for auto-fill in refresh()
+			lv.last_args   = null;   // bypass no-change throttle
+
+			// Monkey-patch render() for one call to detect empty response
+			const orig_render = lv.render.bind(lv);
+			lv.render = () => {
+				lv.render = orig_render;
+				if ((lv.data?.length || 0) <= prev_len) this._no_more_data = true;
+				this._loading_more = false;
+				this._show_load_more_indicator(false);
+				orig_render();
+			};
+
+			lv.refresh();
+		}, 150);
+	}
+
+	_show_load_more_indicator(show) {
+		if (!this.$hot_container) return;
+		if (show) {
+			if (!this.$hot_container.find(".ev-load-more-ind").length) {
+				$('<div class="ev-load-more-ind">Loading more rows…</div>')
+					.appendTo(this.$hot_container);
+			}
+		} else {
+			this.$hot_container.find(".ev-load-more-ind").remove();
+		}
 	}
 
 	/** Debounced save of manual row heights to user_settings (600ms). */
@@ -1856,7 +2078,14 @@ frappe.views.ExcelBoard = class ExcelBoard {
 
 				// Re-apply column config to HOT
 				this.hot.updateSettings({ columns: this.columns });
-				this.hot.render();
+
+				// Re-apply existing formula columns so they don't lose their values
+				if (this._formula_col_map?.size) {
+					const total = (this.list_view.data?.length || 0) - 1;
+					if (total >= 0) this._reapply_formula_cols(0, total);
+				} else {
+					this.hot.render();
+				}
 
 				// Focus the first cell of the new column
 				const new_col_idx = this.columns.length - 1;
@@ -2554,10 +2783,17 @@ frappe.views.ExcelBoard = class ExcelBoard {
 				nc[key] = e;
 			});
 			cfg._value_cache = nc;
-			frappe.model.user_settings.save(this.doctype, "excel_smart_lookups", this._applied_lookups);
+			// Strip runtime-only caches before persisting — rebuilt on restore.
+			const _slk_save = this._applied_lookups.map(({ _fresh_rows: _f, _value_cache: _v, ...rest }) => rest);
+			// Synchronously patch cache to avoid race condition with concurrent saves (excel_sheets, cf_rules, etc.)
+			if (!frappe.model.user_settings[this.doctype]) frappe.model.user_settings[this.doctype] = {};
+			frappe.model.user_settings[this.doctype].excel_smart_lookups = _slk_save;
+			frappe.model.user_settings.update(this.doctype, frappe.model.user_settings[this.doctype]);
 		}
 
-		(this.list_view?.data || []).forEach(row => {
+		// Enrich the correct source data array: src_sheet.data for non-base lookups, list_view.data for base.
+		const _slk_src_data = this._slk_src_data(cfg);
+		_slk_src_data.forEach(row => {
 			const key = String(row[cfg.src_field] ?? "").trim().toLowerCase();
 			const tr = tgt_map.get(key);
 			cfg.return_fields.forEach(f => {
@@ -2571,7 +2807,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	/** Perform the join using the saved _value_cache (offline / blank-sheet fallback). */
 	_slk_join_cache(cfg) {
 		if (!cfg._value_cache || !Object.keys(cfg._value_cache).length) return;
-		(this.list_view?.data || []).forEach(row => {
+		this._slk_src_data(cfg).forEach(row => {
 			const key = String(row[cfg.src_field] ?? "").trim().toLowerCase();
 			const tr = cfg._value_cache[key];
 			cfg.return_fields.forEach(f => {
@@ -2582,8 +2818,45 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this.hot?.render();
 	}
 
-	/** Ensure _slk_* columns exist in _master_columns / columns. */
+	/**
+	 * Return the data array to enrich for a given lookup config.
+	 * Non-base lookups (cfg.src_sheet_id set) iterate the report/blank sheet's data.
+	 * Base lookups fall back to list_view.data.
+	 */
+	_slk_src_data(cfg) {
+		if (cfg.src_sheet_id) {
+			const src = this.sheet_manager?._sheets?.get(cfg.src_sheet_id);
+			if (src?.data?.length) return src.data;
+		}
+		return this.list_view?.data || [];
+	}
+
+	/** Ensure _slk_* columns exist on the correct sheet (src_sheet.columns_config or _master_columns). */
 	_slk_ensure_cols(cfg) {
+		const sm = this.sheet_manager;
+		// Non-base lookup → add columns to the src sheet's columns_config only (not _master_columns)
+		if (cfg.src_sheet_id) {
+			const src = sm?._sheets?.get(cfg.src_sheet_id);
+			if (!src) return;
+			const existing = new Set((src.columns_config || []).map(c => c.data));
+			let changed = false;
+			cfg.return_fields.forEach(f => {
+				const key = `_slk_${f.fieldname}`;
+				if (!existing.has(key)) {
+					src.columns_config = [...(src.columns_config || []), {
+						data: key,
+						title: `${f.label} [${cfg.tgt_sheet_label}]`,
+						readOnly: true,
+						_is_lookup_col: true,
+					}];
+					existing.add(key);
+					changed = true;
+				}
+			});
+			if (changed && sm?.get_current()?.id === src.id) sm._apply_sheet(src);
+			return;
+		}
+		// Base lookup → add to _master_columns
 		const existing = new Set(this._master_columns.map(c => c.data));
 		let changed = false;
 		cfg.return_fields.forEach(f => {
@@ -2646,10 +2919,12 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		// Re-group meta fields into virtual _meta column if present
 		this._inject_meta_column();
 		this._inject_social_column();
-		// Re-inject Smart Lookup columns into _master_columns after column rebuild
+		// Re-inject base-sheet Smart Lookup columns into _master_columns after column rebuild.
+		// Non-base lookups (src_sheet_id set) live in their own sheet's columns_config — skip here.
 		if (this._applied_lookups?.length) {
 			const existing_keys = new Set(this._master_columns.map(c => c.data));
 			this._applied_lookups.forEach(cfg => {
+				if (cfg.src_sheet_id) return; // belongs to a report/blank sheet, not _master_columns
 				cfg.return_fields.forEach(f => {
 					const key = `_slk_${f.fieldname}`;
 					if (!existing_keys.has(key)) {
@@ -2800,7 +3075,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	/**
 	 * Reload grid with fresh data from the server.
 	 */
-	refresh(new_data) {
+	refresh(new_data, { append = false } = {}) {
 		// Clear any pending inline insert — server data replaces the grid
 		if (this._new_row_idx >= 0) {
 			this._new_row_idx = -1;
@@ -2818,6 +3093,23 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			return;
 		}
 
+		// Fresh refresh (filter change, sort etc.) → reset infinite-scroll state
+		if (!append) {
+			this._no_more_data = false;
+			this._loading_more = false;
+		}
+
+		// On first refresh, restore formula columns from user_settings if no workbook loaded
+		if (!append && this._pending_formula_col_templates?.length && !this._formula_col_map?.size) {
+			this._restore_formula_col_templates(this._pending_formula_col_templates);
+			this._pending_formula_col_templates = null;
+		}
+
+		// On load-more (append), save scroll row so we can restore it after
+		// loadData() resets the viewport to the top.
+		const saved_row   = append ? (this.hot?.getFirstFullyVisibleRow?.() ?? 0) : 0;
+		const prev_data_len = append ? (this._prev_append_len || 0) : 0;
+
 		this.data = new_data;
 		this.matrix = this.data_manager.to_matrix(new_data, this.columns);
 		this.formula_bridge.reload(this.matrix);
@@ -2830,6 +3122,18 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this._tree_parent_map = new Map();
 		new_data.forEach((row, i) => { if (row._tree_is_header) this._tree_parent_map.set(row._tree_group_key, i); });
 		this.hot.loadData(new_data);
+
+		// Restore scroll position after load-more so the viewport doesn't jump to top
+		if (append && saved_row > 0) {
+			requestAnimationFrame(() => this.hot?.scrollViewportTo?.(saved_row, undefined));
+		}
+
+		// Re-apply formula columns: full reload on fresh refresh, new rows only on append
+		if (this._formula_col_map?.size) {
+			const from = append ? prev_data_len : 0;
+			const to   = new_data.length - 1;
+			if (to >= from) requestAnimationFrame(() => this._reapply_formula_cols(from, to));
+		}
 
 		// CT columns — re-enrich on every data refresh (idle refresh wipes values)
 		if (this._ct_fieldnames?.length && new_data?.length) {
@@ -3313,6 +3617,11 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this._pending_join_config = null;
 		$(document).off("keydown.ev");
 		this._resize_observer?.disconnect();
+		// Remove infinite-scroll listener
+		if (this._scroll_listener) {
+			this._scroll_listener.target.removeEventListener("scroll", this._scroll_listener.fn);
+			this._scroll_listener = null;
+		}
 		this.toolbar_component?.destroy();
 		this.formula_bar_component?.destroy();
 		this.status_bar?.destroy();

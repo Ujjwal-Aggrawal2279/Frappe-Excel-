@@ -233,6 +233,16 @@ bench build --app excel_view   # required after every pull (dist files are not c
 - Fix: `cf_manager._save_rules()` now (1) patches `frappe.model.user_settings[doctype].excel_cf_rules` synchronously before posting, and (2) calls `frappe.model.user_settings.update()` instead of `save()` to bypass the no-change guard (which would skip the POST if the cache was already patched)
 - CF rules removed from workbook serialization/restoration — they are `user_settings`-only; workbook restore no longer touches `excel_cf_rules`
 
+**v3.2 Bug Fixes — Mar 19 2026**
+
+- **excel_sheets never persisted (root cause)** — `report_meta._controls` (Frappe UI jQuery objects) caused `JSON.stringify` to throw inside `frappe.request.prepare()`, silently aborting every `update()` call. Fix: `sheet_manager.serialize()` strips `_controls` from `report_meta` — only saves `name`, `filter_defs`, `current_filters`.
+- **_auto_persist_sheets race condition** — sync-patch `frappe.model.user_settings[doctype].excel_sheets` before calling `update()` (same sync-patch pattern as the CF persistence fix).
+- **Smart Lookup on report/blank sheets** — `_slk_join` always iterated `list_view.data`; a lookup on a report sheet (e.g. IGA → Customer) produced empty values. Fix: `src_sheet_id` saved in cfg; `_slk_src_data(cfg)` helper returns `src_sheet.data` for non-base lookups; `_slk_ensure_cols` routes to `src_sheet.columns_config` (not `_master_columns`) for non-base lookups; column re-injection after `_inject_social_column()` skips non-base cfgs; Refresh callback triggers `_reapply_smart_lookups` for affected sheets; `_apply_client_side_lookup` saves with sync-patch.
+- **Pivot table using wrong data** — `board.sheet_manager?.active_sheet` does NOT exist (API is `get_current()`); was always `undefined` → fell through to `list_view.data`. Fixed: `PivotBuilder._get_active_data()` now calls `get_current()`.
+- **Chart using wrong data** — Same `active_sheet` bug in `chart_manager.js`. Both `_build_dialog` and `_get_chart_data()` now use `_get_sheet_data()` which calls `get_current()`.
+- **Pivot sheet `_data_is_stale` never cleared** — `_recompute_pivot_sheet` now sets `sheet._data_is_stale = false` after computing. Stale-check in `_get_active_data` / `_get_sheet_data` bypassed when `active.pivot_config` is set.
+- **`_recompute_pivot_sheet` wrong fallback** — was falling back to `list_view.data` when source sheet was stale → wrong data; now returns early (skips recompute) if `src._data_is_stale` and will recompute correctly on tab switch after the source refreshes.
+
 ---
 
 ### v3.1 — Mar 2026

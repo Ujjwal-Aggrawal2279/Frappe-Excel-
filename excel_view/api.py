@@ -81,24 +81,36 @@ def _validate_fieldname(doctype: str, fieldname: str) -> None:
         )
 
 
-def _parse_filter_pairs(
-    fk1=None,
-    fv1=None,
-    fk2=None,
-    fv2=None,
-    fk3=None,
-    fv3=None,
-) -> dict:
-    """
-    Build a filters dict from up to three SUMIF-style key/value pairs.
+_FILTER_OPS = frozenset({">", "<", ">=", "<=", "!=", "like", "not like", "in", "not in", "between"})
 
-    Keys and values that are None or empty string are silently skipped,
-    so callers don't need to worry about omitted optional arguments.
+
+def _parse_filter_pairs(
+    fk1=None, fv1=None,
+    fk2=None, fv2=None,
+    fk3=None, fv3=None,
+    fk4=None, fv4=None,
+) -> list:
     """
-    filters: dict = {}
-    for key, val in ((fk1, fv1), (fk2, fv2), (fk3, fv3)):
-        if key and val is not None and val != "":
-            filters[str(key)] = val
+    Build a Frappe filter list from up to four SUMIF-style key/value pairs.
+
+    Supports both exact-match and operator-style keys:
+      Exact:    fk="ev_sales_person", fv="Arjun" → ["ev_sales_person", "=", "Arjun"]
+      Operator: fk="transaction_date >=", fv="2026-03-01" → ["transaction_date", ">=", "2026-03-01"]
+
+    Keys/values that are None or empty are silently skipped.
+    Returns a list of [field, op, value] triples (frappe.get_list accepts this format).
+    """
+    filters = []
+    for key, val in ((fk1, fv1), (fk2, fv2), (fk3, fv3), (fk4, fv4)):
+        if not key or val is None or val == "":
+            continue
+        key = str(key).strip()
+        # Detect trailing operator: "transaction_date >=" → field="transaction_date", op=">="
+        parts = key.rsplit(" ", 1)
+        if len(parts) == 2 and parts[1].lower() in _FILTER_OPS:
+            filters.append([parts[0], parts[1], val])
+        else:
+            filters.append([key, "=", val])
     return filters
 
 
@@ -196,17 +208,39 @@ def frappe_get(doctype: str, name: str, fieldname: str) -> dict:
     """
     Fetch a single field value from one document.
 
-    Used by the ``FRAPPE_GET(doctype, name, fieldname)`` HyperFormula function.
-    Validates fieldname against live meta so custom fields from any app work.
+    Supports dot-notation to follow one Link field hop:
+        FRAPPE_GET("Sales Person", "Arjun Sharma", "employee.ctc")
+        → reads Sales Person.employee (Link→Employee), then Employee.ctc
 
     Returns:
-        {"value": <field_value>}  — value may be str, int, float, or None.
+        {"value": <field_value>}
     """
     frappe.has_permission(doctype, "read", throw=True)
-    _validate_fieldname(doctype, fieldname)
 
-    value = frappe.db.get_value(doctype, name, fieldname)
-    return {"value": value}
+    if "." in fieldname:
+        # Walk each hop: "ev_sales_person.employee.ctc" → 2 link hops
+        parts = fieldname.split(".")
+        current_doctype = doctype
+        current_name    = name
+
+        for part in parts[:-1]:   # all but last part are link fields to traverse
+            _validate_fieldname(current_doctype, part)
+            meta = frappe.get_meta(current_doctype)
+            df   = meta.get_field(part)
+            if not df or df.fieldtype != "Link":
+                frappe.throw(_(f"'{part}' is not a Link field on {current_doctype}"))
+            current_name = frappe.db.get_value(current_doctype, current_name, part)
+            if not current_name:
+                return {"value": None}
+            current_doctype = df.options
+            frappe.has_permission(current_doctype, "read", throw=True)
+
+        final_field = parts[-1]
+        _validate_fieldname(current_doctype, final_field)
+        return {"value": frappe.db.get_value(current_doctype, current_name, final_field)}
+
+    _validate_fieldname(doctype, fieldname)
+    return {"value": frappe.db.get_value(doctype, name, fieldname)}
 
 
 @frappe.whitelist()
@@ -214,26 +248,16 @@ def frappe_aggregate(
     doctype: str,
     fieldname: str | None = None,
     aggr_type: str = "sum",
-    fk1=None,
-    fv1=None,
-    fk2=None,
-    fv2=None,
-    fk3=None,
-    fv3=None,
+    fk1=None, fv1=None,
+    fk2=None, fv2=None,
+    fk3=None, fv3=None,
+    fk4=None, fv4=None,
 ) -> dict:
     """
     Compute SUM, COUNT, or AVG over a DocType filtered by SUMIF-style pairs.
 
-    Used by ``FRAPPE_SUM``, ``FRAPPE_COUNT``, ``FRAPPE_AVG`` HyperFormula
-    functions.  Accepts up to three field/value filter pairs so formulas stay
-    readable without JSON escaping.
-
-    Args:
-        doctype:    Target DocType name.
-        fieldname:  Field to aggregate (required for sum/avg, ignored for count).
-        aggr_type:  "sum" | "count" | "avg" (case-insensitive).
-        fk1..fk3:  Filter field names (optional).
-        fv1..fv3:  Filter values matching fk1..fk3 (optional).
+    Accepts up to four field/value filter pairs.  Operator-style keys are
+    supported: ``"transaction_date >="`` → ["transaction_date", ">=", value].
 
     Returns:
         {"value": <number>}
@@ -250,7 +274,7 @@ def frappe_aggregate(
     if aggr_type != "count" and fieldname:
         _validate_fieldname(doctype, fieldname)
 
-    filters = _parse_filter_pairs(fk1, fv1, fk2, fv2, fk3, fv3)
+    filters = _parse_filter_pairs(fk1, fv1, fk2, fv2, fk3, fv3, fk4, fv4)
 
     if aggr_type == "count":
         return {"value": frappe.db.count(doctype, filters)}

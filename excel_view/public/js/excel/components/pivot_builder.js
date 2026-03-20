@@ -44,7 +44,7 @@ frappe.views.excel.PivotBuilder = class PivotBuilder {
 
 		this.$modal = $(`
 			<div style="position:fixed;inset:0;z-index:2000;background:rgba(0,0,0,.38);display:flex;align-items:center;justify-content:center">
-				<div style="background:#fff;border-radius:6px;width:940px;max-height:92vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.22)">
+				<div class="ev-pv-dialog" style="border-radius:6px;width:940px;max-height:92vh;display:flex;flex-direction:column;box-shadow:0 8px 32px rgba(0,0,0,.22)">
 					<div style="padding:14px 20px;border-bottom:1px solid var(--border-color);display:flex;align-items:center;justify-content:space-between">
 						<strong>${__("PivotTable Builder")}</strong>
 						<button class="ev-pv-close btn btn-sm btn-default">&#x2715;</button>
@@ -134,7 +134,7 @@ frappe.views.excel.PivotBuilder = class PivotBuilder {
 			items.forEach((item) => {
 				const chip = $(`
 					<div class="ev-pv-zone-chip" data-key="${item.key}" draggable="true"
-						style="font-size:11px;background:#e8f5e9;border:1px solid #a5d6a7;border-radius:3px;padding:2px 6px;display:flex;align-items:center;gap:4px;cursor:grab">
+						style="font-size:11px;border-radius:3px;padding:2px 6px;display:flex;align-items:center;gap:4px;cursor:grab">
 						${frappe.utils.escape_html(item.label)}
 						${zone_id === "values" ? this._agg_select_html(item.key, item.agg) : ""}
 						<span class="ev-pv-chip-remove" data-key="${item.key}" data-zone="${zone_id}" style="cursor:pointer;color:var(--text-muted);font-size:13px;line-height:1">×</span>
@@ -170,6 +170,17 @@ frappe.views.excel.PivotBuilder = class PivotBuilder {
 
 	// ── Pivot computation ────────────────────────────────────────────────────
 
+	/** Return the data for the currently active sheet (DocType or report/blank). */
+	_get_active_data() {
+		const active = this.board.sheet_manager?.get_current();  // get_current() is the correct API
+		// Fresh data on a sub-sheet → use it. Pivot sheets are always fresh after recompute.
+		if (active?.data?.length && (!active._data_is_stale || active.pivot_config)) return active.data;
+		// No sub-sheet active → base list_view data (doctype sheet).
+		if (!active) return this.board.list_view?.data || [];
+		// Sub-sheet exists but stale/empty → return empty (don't pollute with wrong doctype rows).
+		return [];
+	}
+
 	_generate() {
 		if (!this._row_fields.length && !this._col_fields.length) {
 			frappe.show_alert({ message: __("Add at least one Row or Column field"), indicator: "orange" }, 3);
@@ -179,7 +190,7 @@ frappe.views.excel.PivotBuilder = class PivotBuilder {
 			frappe.show_alert({ message: __("Add at least one Value field"), indicator: "orange" }, 3);
 			return;
 		}
-		const data = this.board.list_view?.data || [];
+		const data = this._get_active_data();
 		const html = this._render_pivot(data, this._row_fields, this._col_fields, this._val_configs);
 		this.$modal.find(".ev-pv-output").html(html);
 	}
@@ -194,39 +205,47 @@ frappe.views.excel.PivotBuilder = class PivotBuilder {
 		const result = this._compute_pivot_2d();
 		if (!result) return;
 
-		const { headers, rows } = result;
+		// Capture source sheet id BEFORE creating the pivot sheet (switch_to will change _active_id)
+		const source_sheet_id = this.board.sheet_manager?._active_id || null;
 
-		// Build HOT column configs (use _pvN keys to avoid colliding with real fields)
-		const col_configs = headers.map((h, i) => ({
-			data:  `_pv${i}`,
-			title: h,
-			type:  "text",
-			width: Math.max(110, h.length * 7),
-		}));
+		const { col_configs, data_rows } = PivotBuilder._result_to_hot(result);
+		const new_sheet_id = this.board.sheet_manager?.add_blank_sheet_with_data("Pivot", col_configs, data_rows);
 
-		// Build row objects
-		const to_obj = (row) => {
-			const obj = {};
-			headers.forEach((_, i) => { obj[`_pv${i}`] = row[i] ?? ""; });
-			return obj;
-		};
-		const data_rows = rows.map(to_obj);
-
-		// Pad with 15 empty rows so the sheet feels live
-		const empty = {};
-		headers.forEach((_, i) => { empty[`_pv${i}`] = ""; });
-		for (let i = 0; i < 15; i++) data_rows.push({ ...empty });
-
-		this.board.sheet_manager?.add_blank_sheet_with_data("Pivot", col_configs, data_rows);
+		// Tag the new sheet with its pivot config for dynamic restore
+		if (new_sheet_id) {
+			const new_sheet = this.board.sheet_manager._sheets.get(new_sheet_id);
+			if (new_sheet) {
+				new_sheet.pivot_config = {
+					row_fields:     [...this._row_fields],
+					col_fields:     [...this._col_fields],
+					val_configs:    JSON.parse(JSON.stringify(this._val_configs)),
+					source_sheet_id,
+				};
+				// Persist immediately so workbook save picks it up
+				this.board.sheet_manager._auto_persist_sheets?.();
+			}
+		}
 		this.$modal.remove();
 	}
 
 	/** Compute pivot as { headers: string[], rows: (string|number)[][] } */
 	_compute_pivot_2d() {
-		const data       = this.board.list_view?.data || [];
-		const row_fields = this._row_fields;
-		const col_fields = this._col_fields;
-		const val_cfgs   = this._val_configs;
+		return PivotBuilder.compute(
+			this._get_active_data(),
+			this._row_fields,
+			this._col_fields,
+			this._val_configs,
+		);
+	}
+
+	// ── Static helpers (used by sheet_manager for dynamic restore) ───────────
+
+	/**
+	 * Compute a pivot from raw data + config.
+	 * Returns { headers, rows } or null on empty data.
+	 */
+	static compute(data, row_fields, col_fields, val_cfgs) {
+		if (!data?.length) return null;
 
 		const col_combos = col_fields.length
 			? [...new Map(data.map((r) => {
@@ -255,12 +274,14 @@ frappe.views.excel.PivotBuilder = class PivotBuilder {
 			}
 		};
 
+		const field_label = (f) => f.replace(/_/g, " ").replace(/\b\w/g, (c) => c.toUpperCase());
+
 		const headers = [
-			...row_fields.map((f) => this._field_label(f)),
+			...row_fields.map(field_label),
 			...col_combos.flatMap((combo) =>
 				val_cfgs.map((v) => {
 					const col_lbl = combo.length ? combo.map((c) => String(c ?? "")).join(" / ") : "";
-					const val_lbl = `${v.agg}(${this._field_label(v.field)})`;
+					const val_lbl = `${v.agg}(${field_label(v.field)})`;
 					return col_lbl ? `${col_lbl} › ${val_lbl}` : val_lbl;
 				})
 			),
@@ -290,6 +311,27 @@ frappe.views.excel.PivotBuilder = class PivotBuilder {
 		rows.push(grand);
 
 		return { headers, rows };
+	}
+
+	/** Convert a compute() result to HOT col_configs + data_rows. */
+	static _result_to_hot({ headers, rows }) {
+		const col_configs = headers.map((h, i) => ({
+			data:  `_pv${i}`,
+			title: h,
+			type:  "text",
+			width: Math.max(110, h.length * 7),
+		}));
+		const to_obj = (row) => {
+			const obj = {};
+			headers.forEach((_, i) => { obj[`_pv${i}`] = row[i] ?? ""; });
+			return obj;
+		};
+		const data_rows = rows.map(to_obj);
+		// Pad with empty rows
+		const empty = {};
+		headers.forEach((_, i) => { empty[`_pv${i}`] = ""; });
+		for (let i = 0; i < 15; i++) data_rows.push({ ...empty });
+		return { col_configs, data_rows };
 	}
 
 	_render_pivot(data, row_fields, col_fields, val_configs) {
@@ -324,14 +366,14 @@ frappe.views.excel.PivotBuilder = class PivotBuilder {
 		};
 
 		// Build HTML table
-		const ths_row_fields = row_fields.map((f) => `<th style="background:#e8f5e9">${frappe.utils.escape_html(this._field_label(f))}</th>`).join("");
+		const ths_row_fields = row_fields.map((f) => `<th class="ev-pv-th-row">${frappe.utils.escape_html(this._field_label(f))}</th>`).join("");
 		const ths_col_dim = col_combos.map((combo) => {
 			const lbl = combo.length ? combo.map((v) => frappe.utils.escape_html(String(v ?? ""))).join(" / ") : __("Total");
 			const span = val_configs.length;
-			return `<th colspan="${span}" style="background:#e3f2fd;text-align:center">${lbl}</th>`;
+			return `<th colspan="${span}" class="ev-pv-th-col" style="text-align:center">${lbl}</th>`;
 		}).join("");
 		const ths_val = col_combos.map(() =>
-			val_configs.map((v) => `<th style="background:#e3f2fd;font-size:11px">${frappe.utils.escape_html(v.agg + "(" + this._field_label(v.field) + ")")}</th>`).join("")
+			val_configs.map((v) => `<th class="ev-pv-th-col" style="font-size:11px">${frappe.utils.escape_html(v.agg + "(" + this._field_label(v.field) + ")")}</th>`).join("")
 		).join("");
 
 		const rows_html = [...row_groups.entries()].map(([rk, group_rows]) => {

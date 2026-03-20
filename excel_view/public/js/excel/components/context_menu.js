@@ -252,6 +252,24 @@ frappe.views.excel.ContextMenu = class ContextMenu {
 					},
 				},
 
+
+				// ── Fill Column ───────────────────────────────────────────────
+				fill_column: {
+					name: () => __("Fill Column ↓  (All Rows)"),
+					callback: (key, selection) => {
+						const row = Math.min(selection[0].start.row, selection[0].end.row);
+						const col = Math.min(selection[0].start.col, selection[0].end.col);
+						board._fill_column_all_rows(col, row);
+					},
+					disabled: () => {
+						const sel = board.hot.getSelected();
+						if (!sel?.length) return true;
+						const [r1, c1] = sel[0];
+						const val = board.hot.getDataAtCell(r1, c1);
+						return !board.formula_bridge?.is_formula(val);
+					},
+				},
+
 				sep5: "---------",
 
 				// ── Open form ─────────────────────────────────────────────────

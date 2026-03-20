@@ -50,7 +50,7 @@ def get_data(filters=None):
 		FROM
 			`tabSales Order` so
 		WHERE
-			so.docstatus = 0
+			so.docstatus = 1
 			{conditions}
 		GROUP BY
 			so.customer_name
