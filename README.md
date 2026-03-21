@@ -47,9 +47,15 @@ Works on **vanilla Frappe** and optionally unlocks ERPNext-specific formula func
 - **Full Format Persistence** — All Home tab formatting, column widths, row heights, and hidden rows survive page refresh (user_settings) and are saved/restored via workbook "Save View"
 - **Report Filter Bar** — Load any Frappe Script/Query Report via Data → Get Data → From Reports; a live filter bar appears above the grid with fieldtype-aware Frappe controls (Link with autocomplete, Date picker, Select dropdown, DateRange as two pickers); Refresh re-runs the report with updated filters; report metadata persisted in workbook
 - **Smart Lookup** — Data tab → Smart Lookup; 3-layer join column detection (Layer 1: Frappe meta Link fields → Layer 2: fuzzy header match via rapidfuzz → Layer 3: Jaccard data overlap); works across any two sheets including report sheets; suggestion cards with confidence bars; Apply delegates to IntelliLookup flow
-- **Activity Column** — The 6 Frappe social fields (`_user_tags`, `_comments`, `_assign`, `_liked_by`, `docstatus`, `idx`) are automatically grouped into one compact "Activity" virtual column with CRUD click handlers: like toggle (♥), assign dialog, tag add prompt, comment → route to form; docstatus badge (Draft/Submitted/Cancelled); avatar chips for assigned users
-- **Conditional Formatting — Dark Theme** — CF dialog fully dark-theme compatible; all `background:#fff` inline styles removed and replaced with CSS variables (`var(--fg-color)`, `var(--text-color)`, `var(--border-color)`) via SCSS classes; `[data-theme="dark"]` override block
-- **CF Persistence Fix** — Fixed `frappe.model.user_settings` race condition where deleting a CF rule was restored on page refresh; root cause: concurrent saves read stale in-memory cache; fix uses synchronous cache-patch + `update()` (bypasses no-change guard) instead of `save()`
+- **Activity Column** — The Frappe social fields (`_user_tags`, `_comments`, `_assign`, `_liked_by`, `docstatus`, `idx`) grouped into one compact "Activity" virtual column; SVG icon buttons for tag/like/comment/assign; docstatus badge shown only for submittable doctypes; proper dialogs for all actions (no page redirect); realtime like count update; `_social_html_cache` for O(1) render
+- **Conditional Formatting — Dark Theme** — CF dialog fully dark-theme compatible; all `background:#fff` inline styles removed and replaced with CSS variables; `[data-theme="dark"]` override block
+- **CF Persistence Fix** — Fixed `frappe.model.user_settings` race condition using sync-patch + `update()` pattern
+- **Flash Fill (Ctrl+E)** — Pattern detection on blank columns; automatically fills date sequences, code prefixes, text extraction patterns; Add blank column → type an example → Ctrl+E fills all rows
+- **Column Reorder** — Drag column headers to reorder; new order persisted to user_settings and restored on next load
+- **Frappe-Native Validators** — `beforeChange` hook validates: Currency/Float/Int (numeric only), Link fields (existence check via frappe.db), Select (must be in options), Date (format check); invalid cells show red border
+- **Live Pivot Refresh** — Pivot sheets auto-recompute when `frappe.realtime` fires a `list_update` event for the source DocType — no manual Refresh needed
+- **Field Picker → Center Modal** — "Choose Columns" opens as a sleek centered overlay modal (not a frappe.ui.Dialog); full dark theme; ESC + backdrop close
+- **Focus Cell Dark Theme** — Crosshair highlight correctly blends over dark backgrounds (opaque pre-blended color instead of transparent rgba)
 
 ---
 
@@ -187,6 +193,44 @@ bench build --app excel_view   # required after every pull (dist files are not c
 ---
 
 ## Release Notes
+
+### v3.3 — Mar 2026
+
+**Grid Intelligence — Flash Fill, Column Reorder, Validators, Live Pivot, UI Refinements**
+
+**Flash Fill (Ctrl+E)**
+- Add a blank column → type one or more example values → press Ctrl+E to fill the entire column
+- Pattern detection: date sequences, code prefixes (`CUST-001` → `CUST-002`…), text extraction, constant fill
+- Source `"flash_fill"` skips `afterChange` validation/save handlers (cosmetic fill only)
+- Alert on blank column add: "type an example, then Ctrl+E to Flash Fill"
+
+**Column Reorder (Drag Header)**
+- Drag any column header left or right to reorder columns in-place
+- New order persisted to `user_settings("excel_col_order")` — restored on next page load
+- `_apply_saved_col_order()` runs after every `apply_field_selection()` to maintain order across field changes
+- `_original_columns` snapshot kept for accurate drag-index reads
+
+**Frappe-Native Validators**
+- `beforeChange` HOT hook → `_validate_changes()` runs before every cell edit
+- Currency / Float / Int: rejects non-numeric input with red alert
+- Link fields: `frappe.db.exists(doctype, value)` existence check; `_link_validator_cache` Map prevents duplicate API calls
+- Select fields: value must be in the field's `options` list
+- Date fields: validates `YYYY-MM-DD` format
+
+**Live Pivot Refresh**
+- `frappe.realtime.on("list_update", doctype)` subscribed in `sheet_manager.js`
+- Any create/update/delete on the base DocType automatically triggers `_recompute_pivot_sheet()` for all pivot sheets sourced from it
+- No manual Refresh button click needed
+
+**UI Refinements**
+- **Smart Lookup sidebar** — full redesign with CSS variables (no hardcoded colors); fields not auto-selected (user picks manually); Select all/None toggle; sample size 200 rows for better FK detection
+- **Smart Lookup Layer 0c** — structural FK detection: `frappe.scrub(target_doctype) == fieldname` → 0.94–0.99 confidence; works even when sample data has zero overlap (filtered report sheets)
+- **Meta column (Created/Updated)** — relative time ("2 days ago"), first name only, pencil SVG for modified row; CSS vars for both themes
+- **Activity column** — SVG icon buttons; docstatus badge only on submittable doctypes; all actions open proper dialogs (no page redirect); fixed: unlike (jQuery `.attr()` not `.data()`), assign (ToDo list API), tags (custom `excel_view.api` endpoints using Tag Link doctype)
+- **Focus cell dark theme** — crosshair pre-blends color over dark base (`bg=28`) producing opaque `rgb()` — eliminates white bleed-through in dark mode
+- **Field Picker → center modal** — "Choose Columns" is now a sleek centered overlay (`.ev-fp-modal`), not a `frappe.ui.Dialog`; ESC + backdrop close; full dark theme
+
+---
 
 ### v3.2 — Mar 2026
 

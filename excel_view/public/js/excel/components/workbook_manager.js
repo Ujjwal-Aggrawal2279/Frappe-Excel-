@@ -207,7 +207,7 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 				chart_overlays:  JSON.stringify(config.chart_overlays),
 				format_store:    JSON.stringify(config.format_store),
 				cond_fmt_rules:  JSON.stringify(config.cond_fmt_rules),
-				view_state:      JSON.stringify({ freeze_cols: config.freeze_cols, freeze_rows: config.freeze_rows, hide_gridlines: config.hide_gridlines, smart_lookups: config.smart_lookups || null }),
+				view_state:      JSON.stringify({ freeze_cols: config.freeze_cols, freeze_rows: config.freeze_rows, hide_gridlines: config.hide_gridlines, smart_lookups: config.smart_lookups || null, blank_columns: config.blank_columns?.length ? config.blank_columns : null }),
 				is_public:       is_public ? 1 : 0,
 				workbook_name:   workbook_name || null,
 			},
@@ -382,6 +382,7 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 					freeze_cols:     _vs.freeze_cols    || 0,
 					freeze_rows:     _vs.freeze_rows    || 0,
 					hide_gridlines:  _vs.hide_gridlines || false,
+					blank_columns:   _vs.blank_columns  || [],
 					// smart_lookups packed inside view_state (no extra DocType field needed)
 					smart_lookups:   Array.isArray(_vs.smart_lookups) ? _vs.smart_lookups : null,
 				};
@@ -444,40 +445,32 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 		const board  = this.board;
 		const plugin = board.hot?.getPlugin("manualColumnResize");
 
-		// ── columns_config ─────────────────────────────────────────────────
-		// Join columns (_is_join_col) are intentionally excluded: they are not
-		// Frappe fieldnames and cannot be passed to apply_field_selection().
-		// They are re-added automatically after refresh via _reapply_join_from_config().
-		const columns_config = board.columns.map((col, i) => {
+		// ── columns_config + formula_columns (single pass) ────────────────
+		// Join/lookup columns excluded — restored automatically from their configs.
+		const columns_config = [];
+		const formula_columns = [];
+		const blank_columns = [];
+		board.columns.forEach((col, i) => {
 			// HOT 6.2.2: widths stored in plugin.manualColumnWidths[] by physical index
 			const phys_i = board.hot?.toPhysicalColumn ? board.hot.toPhysicalColumn(i) : i;
 			const width = plugin?.manualColumnWidths?.[phys_i] ?? col.width ?? 140;
+			if (col._is_join_col || col._is_lookup_col) return; // excluded
+			if (col._is_blank_col) {
+				const cfg = board._blank_col_configs?.get(col.data) || {};
+				columns_config.push({ key: col.data, label: col.title, is_blank_col: true, width });
+				blank_columns.push({ key: col.data, label: col.title, ff_transform: cfg.ff_transform || null });
+				return;
+			}
 			if (col._is_formula_col) {
-				return { key: col.data, label: col.title, is_formula_col: true, width };
+				const formula_template = board._formula_col_map?.get(i) || null;
+				columns_config.push({ key: col.data, label: col.title, is_formula_col: true, width });
+				formula_columns.push({ key: col.data, label: col.title, formula_template });
+				return;
 			}
-			if (col._is_join_col)    return null; // excluded — restored via join_config
-			if (col._is_lookup_col) return null; // excluded — restored via smart_lookups config
-			// Meta column: save as special marker with its actual width.
-			// apply_config will expand it to the 4 underlying fields for the server
-			// query, then call _inject_meta_column() to re-group them.
-			if (col._is_meta_col) {
-				return { fieldname: "_meta", width, is_meta_col: true };
-			}
-			if (col._is_social_col) {
-				return { fieldname: "_social", width, is_social_col: true };
-			}
-			return { fieldname: col.data, width };
-		}).filter(Boolean);
-
-		// ── formula_columns ────────────────────────────────────────────────
-		// Save formula template string so it can be re-applied on restore.
-		const formula_columns = board.columns
-			.filter(col => col._is_formula_col)
-			.map(col => {
-				const col_idx = board.columns.indexOf(col);
-				const formula_template = board._formula_col_map?.get(col_idx) || null;
-				return { key: col.data, label: col.title, formula_template };
-			});
+			if (col._is_meta_col)    { columns_config.push({ fieldname: "_meta",    width, is_meta_col: true });   return; }
+			if (col._is_social_col)  { columns_config.push({ fieldname: "_social",  width, is_social_col: true }); return; }
+			columns_config.push({ fieldname: col.data, width });
+		});
 
 		// ── filters ────────────────────────────────────────────────────────
 		// filter_area.get() returns filter objects; normalise to [dt, field, op, value] arrays.
@@ -540,7 +533,7 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 		const hide_gridlines = this.board.$hot_container?.hasClass("ev-hide-gridlines") || false;
 
 		const smart_lookups = board._applied_lookups?.length ? board._applied_lookups : null;
-		return { columns_config: root_columns_config, formula_columns, filters, sort_by, join_config, sheets, chart_overlays, format_store, cond_fmt_rules, freeze_cols, freeze_rows, hide_gridlines, smart_lookups };
+		return { columns_config: root_columns_config, formula_columns, blank_columns, filters, sort_by, join_config, sheets, chart_overlays, format_store, cond_fmt_rules, freeze_cols, freeze_rows, hide_gridlines, smart_lookups };
 	}
 
 	// ── Restore state from config ─────────────────────────────────────────────
@@ -571,7 +564,7 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 		const has_meta_col   = (config.columns_config || []).some(c => c.is_meta_col);
 		const has_social_col = (config.columns_config || []).some(c => c.is_social_col);
 		const regular_fieldnames = (config.columns_config || [])
-			.filter(c => !c.is_formula_col)
+			.filter(c => !c.is_formula_col && !c.is_blank_col)
 			.flatMap(c => {
 				if (c.is_meta_col)   return META_AUDIT_FIELDS;
 				if (c.is_social_col) return SOCIAL_REGULAR_FIELDS;
@@ -597,6 +590,11 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 				formula: fc.formula_template || null,
 			}));
 			board._restore_formula_col_templates(templates);
+		}
+
+		// ── 2b. Re-add blank columns ────────────────────────────────────────
+		if ((config.blank_columns || []).length) {
+			board._restore_blank_cols(config.blank_columns);
 		}
 
 		// ── 3. Column widths ───────────────────────────────────────────────

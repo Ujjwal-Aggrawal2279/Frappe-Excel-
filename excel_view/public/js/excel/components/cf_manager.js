@@ -87,7 +87,7 @@ frappe.views.excel.CFManager = class CFManager {
 			$row.find(".ev-cf-edit-rule").on("click", () => this._open_rule_editor(idx));
 			$row.find(".ev-cf-delete-rule").on("click", () => {
 				this.board.cond_fmt_rules.splice(idx, 1);
-				this.board._clear_cf_cache?.();
+				this.board._clear_cf_cache?.(); this.board._rebuild_cf_cache?.();
 				this._save_rules();
 				this.board.hot?.render();
 				this._render_rule_list();
@@ -181,7 +181,7 @@ frappe.views.excel.CFManager = class CFManager {
 			} else {
 				this.board.cond_fmt_rules.push(new_rule);
 			}
-			this.board._clear_cf_cache?.();
+			this.board._clear_cf_cache?.(); this.board._rebuild_cf_cache?.();
 			this._save_rules();
 			this.board.hot?.render();
 			this._render_rule_list();

@@ -210,6 +210,35 @@ frappe.views.excel.ContextMenu = class ContextMenu {
 				sep4c: "---------",
 
 				// ── Formula column ─────────────────────────────────────────────
+				add_blank_col: {
+					name: () => __("Add Blank Column"),
+					callback: (key, selection) => {
+						const col = Math.max(selection[0].start.col, selection[0].end.col);
+						board._add_blank_column(col);
+					},
+				},
+
+				remove_blank_col: {
+					name: () => __("Remove Blank Column"),
+					callback: (key, selection) => {
+						const start_col = Math.min(selection[0].start.col, selection[0].end.col);
+						const end_col   = Math.max(selection[0].start.col, selection[0].end.col);
+						board._remove_blank_columns(start_col, end_col);
+					},
+					disabled: () => {
+						const sel = board.hot.getSelected();
+						if (!sel?.length) return true;
+						const start_col = Math.min(sel[0][1], sel[0][3]);
+						const end_col   = Math.max(sel[0][1], sel[0][3]);
+						for (let c = start_col; c <= end_col; c++) {
+							if (board.columns[c]?._is_blank_col) return false;
+						}
+						return true;
+					},
+				},
+
+				sep4d: "---------",
+
 				add_formula_col: {
 					name: () => __("Add formula column"),
 					callback: () => board._add_formula_column(),

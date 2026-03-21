@@ -157,24 +157,46 @@ frappe.views.excel.FieldPicker = class FieldPicker {
 		});
 	}
 
-	// ── Dialog creation ───────────────────────────────────────────────────────
+	// ── Modal creation ────────────────────────────────────────────────────────
 
 	_create_dialog() {
-		this._dialog = new frappe.ui.Dialog({
-			title: __("Choose Columns"),
-			fields: [{ fieldtype: "HTML", fieldname: "picker_body" }],
-			primary_action_label: __("Apply"),
-			primary_action: () => this._on_apply(),
-		});
+		const $overlay = $(`
+			<div class="ev-fp-overlay" role="dialog" aria-modal="true" aria-label="${__("Choose Columns")}">
+				<div class="ev-fp-modal">
+					<div class="ev-fp-modal-header">
+						<span class="ev-fp-modal-title">${__("Choose Columns")}</span>
+						<button class="ev-fp-modal-close" aria-label="${__("Close")}">
+							<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14">
+								<path d="M2.146 2.854a.5.5 0 1 1 .708-.708L8 7.293l5.146-5.147a.5.5 0 0 1 .708.708L8.707 8l5.147 5.146a.5.5 0 0 1-.708.708L8 8.707l-5.146 5.147a.5.5 0 0 1-.708-.708L7.293 8z"/>
+							</svg>
+						</button>
+					</div>
+					<div class="ev-fp-modal-body ev-fp-body"></div>
+					<div class="ev-fp-modal-footer">
+						<button class="ev-fp-cancel-btn btn btn-default btn-sm">${__("Cancel")}</button>
+						<button class="ev-fp-submit-btn btn btn-primary btn-sm">${__("Apply")}</button>
+					</div>
+				</div>
+			</div>
+		`).appendTo(document.body);
 
-		const $body = this._dialog.get_field("picker_body").$wrapper;
-		$body.addClass("ev-fp-body");
+		this._$overlay = $overlay;
+		const $body = $overlay.find(".ev-fp-modal-body");
 		this._render($body);
 
-		// Style the primary (Apply) button with Excel green
-		this._dialog.$wrapper.find(".btn-primary").addClass("ev-fp-apply-btn");
+		const close = () => {
+			$(document).off("keydown.ev-fp");
+			$overlay.remove();
+		};
+		this._close_modal = close;
 
-		this._dialog.show();
+		$overlay.on("click", ".ev-fp-modal-close, .ev-fp-cancel-btn", close);
+		$overlay.on("click", (e) => { if ($(e.target).is(".ev-fp-overlay")) close(); });
+		$overlay.on("click", ".ev-fp-submit-btn", () => this._on_apply());
+		$(document).on("keydown.ev-fp", (e) => { if (e.key === "Escape") close(); });
+
+		// Focus search on open
+		setTimeout(() => $overlay.find(".ev-fp-search")[0]?.focus(), 60);
 	}
 
 	_render($body) {
@@ -377,7 +399,7 @@ frappe.views.excel.FieldPicker = class FieldPicker {
 		frappe.model.user_settings.save(this.doctype, "excel_columns", regular);
 		frappe.model.user_settings.save(this.doctype, "excel_ct_columns", ct);
 
-		this._dialog.hide();
+		this._close_modal?.();
 		this.board.apply_field_selection([...regular, ...ct]);
 	}
 };

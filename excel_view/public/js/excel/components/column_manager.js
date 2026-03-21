@@ -195,6 +195,30 @@ frappe.views.excel.ColumnManager = class ColumnManager {
 	}
 
 	/**
+	 * Persist column order after drag-reorder (V3.3).
+	 * Debounced 400ms — rapid drags (slow mouse release) must not fire multiple POSTs.
+	 * @param {string[]} order - array of column data keys in new visual order
+	 */
+	save_order(order) {
+		// Debounce HTTP POST — do NOT sync-patch before save() call.
+		// save() compares old vs new JSON; pre-patching the cache makes them identical
+		// → "no change" guard skips the POST entirely (same bug as CF rules / sheet_manager).
+		// We use a closure over `order` so the latest value is always saved.
+		clearTimeout(this._order_save_timer);
+		this._order_save_timer = setTimeout(() => {
+			frappe.model.user_settings.save(this.meta.name, "excel_col_order", order);
+		}, 400);
+	}
+
+	/**
+	 * Load persisted column order from user settings.
+	 * @returns {string[]|null}
+	 */
+	_load_order() {
+		return frappe.get_user_settings(this.meta.name)?.excel_col_order || null;
+	}
+
+	/**
 	 * Persist freeze column count to user settings.
 	 * @param {number} n - number of columns frozen (0 = unfrozen)
 	 */

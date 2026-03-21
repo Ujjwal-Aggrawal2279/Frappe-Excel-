@@ -43,6 +43,36 @@ frappe.views.excel.SheetManager = class SheetManager {
 
 		this._build_tab_strip();
 		this._render_tabs();
+
+		// V3.3 — Live Pivot Refresh: recompute all pivot sheets when source data changes
+		this._setup_live_pivot_refresh();
+	}
+
+	// V3.3 — Subscribe to frappe.realtime list_update for the base doctype so that
+	// pivot sheets auto-recompute when another user creates/updates a record.
+	_setup_live_pivot_refresh() {
+		const doctype = this.board.doctype;
+		frappe.realtime.on("list_update", (data) => {
+			if (data?.doctype !== doctype) return;
+			// Debounce — batch rapid fire updates
+			clearTimeout(this._live_pivot_timer);
+			this._live_pivot_timer = setTimeout(() => {
+				// Only recompute if there are pivot sheets
+				const pivot_sheets = [...this._sheets.values()].filter(s => s.pivot_config);
+				if (!pivot_sheets.length) return;
+				// Mark base sheet stale and refresh
+				const base = [...this._sheets.values()].find(s => s.doctype === doctype && !s.is_blank);
+				if (base) base._data_is_stale = true;
+				// If a pivot sheet is currently active, trigger full refresh chain
+				const active = this.get_current();
+				if (active?.pivot_config) {
+					this.board.list_view.refresh();
+				} else {
+					// Otherwise just recompute pivot sheets silently using current data
+					pivot_sheets.forEach(s => this._recompute_pivot_sheet(s));
+				}
+			}, 1500);
+		});
 	}
 
 	/** Add a new sheet tab via dialog. */
@@ -255,7 +285,15 @@ frappe.views.excel.SheetManager = class SheetManager {
 		// concurrent saves (smart_lookups, cf_rules, etc.) don't overwrite with stale data.
 		if (!frappe.model.user_settings[doctype]) frappe.model.user_settings[doctype] = {};
 		frappe.model.user_settings[doctype].excel_sheets = serialized;
-		frappe.model.user_settings.update(doctype, frappe.model.user_settings[doctype]);
+		// Debounced: batch rapid sheet ops (add/remove/rename) into single POST
+		this._persist_sheets_debounced(doctype);
+	}
+
+	_persist_sheets_debounced(doctype) {
+		clearTimeout(this._persist_timer);
+		this._persist_timer = setTimeout(() => {
+			frappe.model.user_settings.update(doctype, frappe.model.user_settings[doctype]);
+		}, 400);
 	}
 
 	serialize() {

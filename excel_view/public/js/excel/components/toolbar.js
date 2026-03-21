@@ -1544,46 +1544,53 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 			<div class="ev-rs-panel" data-rs-panel="smart_lookup">
 				<div class="ev-rs-head">
 					<div class="ev-rs-title-wrap">
-						<svg class="ev-rs-icon" width="16" height="16" viewBox="0 0 16 16" fill="currentColor">
-							<path d="M11.5 2a.5.5 0 0 1 .5.5v11a.5.5 0 0 1-1 0v-11a.5.5 0 0 1 .5-.5zm-3 3a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-1 0v-8a.5.5 0 0 1 .5-.5zm-3 3a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm-3 3a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2a.5.5 0 0 1 .5-.5z"/>
-						</svg>
+						<div class="ev-rs-icon">
+							<svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor">
+								<path d="M11.5 2a.5.5 0 0 1 .5.5v11a.5.5 0 0 1-1 0v-11a.5.5 0 0 1 .5-.5zm-3 3a.5.5 0 0 1 .5.5v8a.5.5 0 0 1-1 0v-8a.5.5 0 0 1 .5-.5zm-3 3a.5.5 0 0 1 .5.5v5a.5.5 0 0 1-1 0v-5a.5.5 0 0 1 .5-.5zm-3 3a.5.5 0 0 1 .5.5v2a.5.5 0 0 1-1 0v-2a.5.5 0 0 1 .5-.5z"/>
+							</svg>
+						</div>
 						<div>
 							<div class="ev-rs-title">${__("Smart Lookup")}</div>
-							<div class="ev-rs-sub">${__("Detect join columns · Zero-LLM")}</div>
+							<div class="ev-rs-sub">${__("Auto-detect join columns")}</div>
 						</div>
 					</div>
-					<button class="ev-rs-close" title="${__("Close")}">✕</button>
+					<button class="ev-rs-close" title="${__("Close")}">
+						<svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><path d="M6 5.293l4.146-4.147.708.708L6.707 6l4.147 4.146-.708.708L6 6.707l-4.146 4.147-.708-.708L5.293 6 1.146 1.854l.708-.708z"/></svg>
+					</button>
 				</div>
 				<div class="ev-rs-body">
 					${sheets.length < 2 ? `
 						<div class="ev-slk-empty">
-							${__("Load data into at least 2 sheets to use Smart Lookup.")}
-							<br><br>
-							${__("Use Data → Get Data to load a DocType or report into a sheet.")}
+							<svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5"><rect x="3" y="3" width="7" height="7" rx="1"/><rect x="14" y="3" width="7" height="7" rx="1"/><rect x="3" y="14" width="7" height="7" rx="1"/><path d="M14 17.5h7M17.5 14v7"/></svg>
+							<div>${__("Load data into at least 2 sheets to use Smart Lookup.")}</div>
+							<div style="margin-top:6px;font-size:11px">${__("Use Data → Get Data to add sheets.")}</div>
 						</div>
 					` : `
 						<div class="ev-rs-field">
 							<div class="ev-rs-label">
-								<span class="ev-slk-lbl-badge ev-slk-lbl-badge--dest">▼ IN</span>
+								<span class="ev-slk-lbl-badge ev-slk-lbl-badge--dest">IN</span>
 								${__("Add Columns To")}
 							</div>
 							<select class="ev-slk-src-select form-control form-control-sm">${opts_html}</select>
-							<div class="ev-rs-hint">${__("Results land here — new columns get injected")}</div>
+							<div class="ev-rs-hint">${__("New lookup columns appear in this sheet")}</div>
 						</div>
-						<div class="ev-rs-field" style="margin-top:8px">
+						<div class="ev-rs-field">
 							<div class="ev-rs-label">
-								<span class="ev-slk-lbl-badge ev-slk-lbl-badge--src">↑ FROM</span>
+								<span class="ev-slk-lbl-badge ev-slk-lbl-badge--src">FROM</span>
 								${__("Pull Data From")}
 							</div>
 							<select class="ev-slk-tgt-select form-control form-control-sm">${opts_html}</select>
-							<div class="ev-rs-hint">${__("Reference sheet — its columns appear in the picker below")}</div>
+							<div class="ev-rs-hint">${__("Reference sheet — columns from here get joined")}</div>
 						</div>
-						<div style="text-align:center;margin:4px 0">
-							<button class="btn btn-xs btn-default ev-slk-swap-btn" title="${__("Swap sheets")}">⇅ ${__("Swap")}</button>
+						<div style="display:flex;gap:6px;margin-top:2px">
+							<button class="btn btn-xs btn-default ev-slk-swap-btn" style="flex:0 0 auto" title="${__("Swap sheets")}">
+								<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor"><path d="M11.534 7h3.932a.25.25 0 0 1 .192.41l-1.966 2.36a.25.25 0 0 1-.384 0l-1.966-2.36a.25.25 0 0 1 .192-.41zm-11 2h3.932a.25.25 0 0 0 .192-.41L2.692 6.23a.25.25 0 0 0-.384 0L.342 8.59A.25.25 0 0 0 .534 9z"/><path fill-rule="evenodd" d="M8 3c-1.552 0-2.94.707-3.857 1.818a.5.5 0 1 1-.771-.636A6.002 6.002 0 0 1 13.917 7H12.9A5.002 5.002 0 0 0 8 3zM3.1 9a5.002 5.002 0 0 0 8.757 2.182.5.5 0 1 1 .771.636A6.002 6.002 0 0 1 2.083 9H3.1z"/></svg>
+								${__("Swap")}
+							</button>
+							<button class="btn btn-primary btn-sm ev-slk-analyze-btn" style="flex:1">
+								${__("Analyze Joins")} →
+							</button>
 						</div>
-						<button class="btn btn-primary btn-sm ev-slk-analyze-btn" style="width:100%;margin-top:4px">
-							${__("Analyze →")}
-						</button>
 						<div class="ev-slk-divider"></div>
 						<div class="ev-slk-results-wrap" style="display:none">
 							<div class="ev-slk-results-head"></div>
@@ -1663,10 +1670,10 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		})).filter(h => h.fieldname && !h.fieldname.startsWith("_")
 			&& !(tgt._hidden_col_keys?.has(h.fieldname)));
 
-		const src_sample = (src.data || []).slice(0, 50).map(row =>
+		const src_sample = (src.data || []).slice(0, 200).map(row =>
 			src_headers.map(h => String(row[h.fieldname] ?? ""))
 		);
-		const tgt_sample = (tgt.data || []).slice(0, 50).map(row =>
+		const tgt_sample = (tgt.data || []).slice(0, 200).map(row =>
 			tgt_headers.map(h => String(row[h.fieldname] ?? ""))
 		);
 
@@ -1823,9 +1830,10 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		});
 
 		// Update label to show which sheet we're pulling FROM
-		$apply.find(".ev-slk-fieldpick-label").html(
-			`${__("Pull from")} <strong>${frappe.utils.escape_html(tgt_sheet.label)}</strong>:`
-		);
+		$apply.find(".ev-slk-fieldpick-label").html(`
+			<span>${__("From")} <strong>${frappe.utils.escape_html(tgt_sheet.label)}</strong>:</span>
+			<button class="ev-slk-chip-toggle" data-all="0">${__("Select all")}</button>
+		`);
 
 		$chips.html(pickable.map(c => {
 			const fn  = c.fieldname || c.data || "";
@@ -1835,13 +1843,18 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 			</button>`;
 		}).join("") || `<span class="ev-slk-chips-empty text-muted" style="font-size:11px">${__("No columns available")}</span>`);
 
-		// Toggle chip selection
+		// Toggle chip selection on click
 		$chips.off("click.chip").on("click.chip", ".ev-slk-chip", (e) => {
 			$(e.currentTarget).toggleClass("ev-slk-chip--selected");
 		});
 
-		// Auto-select all chips on first open
-		$chips.find(".ev-slk-chip").addClass("ev-slk-chip--selected");
+		// Select all / none toggle
+		$apply.off("click.chiptoggle").on("click.chiptoggle", ".ev-slk-chip-toggle", (e) => {
+			const $btn = $(e.currentTarget);
+			const all = $btn.data("all") === 1;
+			$chips.find(".ev-slk-chip").toggleClass("ev-slk-chip--selected", !all);
+			$btn.data("all", all ? 0 : 1).text(all ? __("Select all") : __("Select none"));
+		});
 	}
 
 	_apply_smart_lookup(src_sheet, tgt_sheet, suggestion) {
@@ -2144,56 +2157,108 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 
 	_gd_open() {
 		this._gd_target = "new";
-		this._gd_d = new frappe.ui.Dialog({ title: __("Get Data"), size: "large" });
-		this._gd_d.show();
-		const $body = $(this._gd_d.body);
-		$body.addClass("ev-gd-body");
+		this.$gd_modal = $(`
+			<div class="ev-gd-backdrop">
+				<div class="ev-gd-modal">
+					<div class="ev-gd-modal-header">
+						<div class="ev-gd-title-group">
+							<svg class="ev-gd-title-icon" viewBox="0 0 20 20" fill="currentColor">
+								<path d="M3 4a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4zm0 6a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-2zm0 6a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v1a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-1z"/>
+							</svg>
+							<span class="ev-gd-modal-title">${__("Get Data")}</span>
+						</div>
+						<div class="ev-gd-stepper">
+							<div class="ev-gd-step ev-gd-step--active" data-step="1">
+								<div class="ev-gd-step-bubble">
+									<span class="ev-gd-step-num">1</span>
+									<svg class="ev-gd-step-check" viewBox="0 0 12 12" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="2,6 5,9.5 10,2.5"/></svg>
+								</div>
+								<span class="ev-gd-step-lbl">${__("Source")}</span>
+							</div>
+							<div class="ev-gd-step-line"></div>
+							<div class="ev-gd-step" data-step="2">
+								<div class="ev-gd-step-bubble"><span class="ev-gd-step-num">2</span></div>
+								<span class="ev-gd-step-lbl">${__("Configure")}</span>
+							</div>
+						</div>
+						<button class="ev-gd-close-btn" aria-label="${__("Close")}">
+							<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
+						</button>
+					</div>
+					<div class="ev-gd-modal-body"></div>
+					<div class="ev-gd-modal-footer">
+						<span class="ev-gd-target-lbl">${__("Load into:")}</span>
+						<label class="ev-gd-radio"><input type="radio" name="ev_gd_target" value="new" checked> ${__("New Sheet")}</label>
+						<label class="ev-gd-radio"><input type="radio" name="ev_gd_target" value="current"> ${__("Current Sheet")}</label>
+					</div>
+				</div>
+			</div>
+		`).appendTo(document.body);
+		this.$gd_modal.find(".ev-gd-close-btn").on("click", () => this._gd_close());
+		this.$gd_modal.on("click.gd", (e) => { if ($(e.target).hasClass("ev-gd-backdrop")) this._gd_close(); });
+		this.$gd_modal.on("change.gd", "input[name=ev_gd_target]", (e) => { this._gd_target = $(e.currentTarget).val(); });
+		const $body = this.$gd_modal.find(".ev-gd-modal-body");
 		this._gd_step1($body);
 	}
 
+	_gd_close() {
+		this.$gd_modal?.remove();
+		this.$gd_modal = null;
+	}
+
+	_gd_set_step(n) {
+		this.$gd_modal?.find(".ev-gd-step").each(function() {
+			const s = parseInt($(this).data("step"));
+			$(this).removeClass("ev-gd-step--active ev-gd-step--done");
+			if (s < n)      $(this).addClass("ev-gd-step--done");
+			else if (s === n) $(this).addClass("ev-gd-step--active");
+		});
+		this.$gd_modal?.find(".ev-gd-step-line").toggleClass("ev-gd-step-line--done", n > 1);
+	}
+
 	_gd_step1($body) {
+		this._gd_set_step(1);
 		const SOURCES = [
 			{ id: "reports", color: "#1565c0", label: __("From Reports"), sub: __("Frappe standard & custom reports"),
-			  icon: `<svg width="28" height="28" viewBox="0 0 16 16" fill="currentColor"><path d="M1 11a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1v-3zm5-4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7zm5-5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1V2z"/></svg>` },
+			  icon: `<svg width="24" height="24" viewBox="0 0 16 16" fill="currentColor"><path d="M1 11a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1v-3zm5-4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7zm5-5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1V2z"/></svg>` },
 			{ id: "gsheets", color: "#2e7d32", label: __("Google Sheets"), sub: __("Public spreadsheet by URL"),
-			  icon: `<svg width="28" height="28" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="1" width="12" height="14" rx="1"/><line x1="2" y1="5" x2="14" y2="5"/><line x1="2" y1="9" x2="14" y2="9"/><line x1="6" y1="1" x2="6" y2="15"/></svg>` },
+			  icon: `<svg width="24" height="24" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.3"><rect x="2" y="1" width="12" height="14" rx="1"/><line x1="2" y1="5" x2="14" y2="5"/><line x1="2" y1="9" x2="14" y2="9"/><line x1="6" y1="1" x2="6" y2="15"/></svg>` },
 			{ id: "csv",     color: "#e65100", label: __("CSV"),           sub: __("File upload or URL"),
-			  icon: `<svg width="28" height="28" viewBox="0 0 16 16" fill="currentColor"><path d="M5.5 7a.5.5 0 0 0 0 1h5a.5.5 0 0 0 0-1h-5zm0 2a.5.5 0 0 0 0 1h5a.5.5 0 0 0 0-1h-5zm0 2a.5.5 0 0 0 0 1h3a.5.5 0 0 0 0-1h-3z"/><path d="M3 0h7.586a1 1 0 0 1 .707.293L13.707 2.707A1 1 0 0 1 14 3.414V14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2a2 2 0 0 1 2-2zm0 2v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V4h-2.5A1.5 1.5 0 0 1 9 2.5V0H4a1 1 0 0 0-1 1z"/></svg>` },
+			  icon: `<svg width="24" height="24" viewBox="0 0 16 16" fill="currentColor"><path d="M5.5 7a.5.5 0 0 0 0 1h5a.5.5 0 0 0 0-1h-5zm0 2a.5.5 0 0 0 0 1h5a.5.5 0 0 0 0-1h-5zm0 2a.5.5 0 0 0 0 1h3a.5.5 0 0 0 0-1h-3z"/><path d="M3 0h7.586a1 1 0 0 1 .707.293L13.707 2.707A1 1 0 0 1 14 3.414V14a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2a2 2 0 0 1 2-2zm0 2v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V4h-2.5A1.5 1.5 0 0 1 9 2.5V0H4a1 1 0 0 0-1 1z"/></svg>` },
 			{ id: "json",    color: "#6a1b9a", label: __("JSON"),          sub: __("File, URL, or paste"),
-			  icon: `<svg width="28" height="28" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2zm2-1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H4z"/><path d="M4.5 5.5a.5.5 0 0 0 0 1h7a.5.5 0 0 0 0-1h-7zm0 2a.5.5 0 0 0 0 1h7a.5.5 0 0 0 0-1h-7zm0 2a.5.5 0 0 0 0 1h4a.5.5 0 0 0 0-1h-4z"/></svg>` },
+			  icon: `<svg width="24" height="24" viewBox="0 0 16 16" fill="currentColor"><path d="M2 2a2 2 0 0 1 2-2h8a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V2zm2-1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h8a1 1 0 0 0 1-1V2a1 1 0 0 0-1-1H4z"/><path d="M4.5 5.5a.5.5 0 0 0 0 1h7a.5.5 0 0 0 0-1h-7zm0 2a.5.5 0 0 0 0 1h7a.5.5 0 0 0 0-1h-7zm0 2a.5.5 0 0 0 0 1h4a.5.5 0 0 0 0-1h-4z"/></svg>` },
 			{ id: "pdf",     color: "#b71c1c", label: __("PDF"),           sub: __("Extract tables from PDF"),
-			  icon: `<svg width="28" height="28" viewBox="0 0 16 16" fill="currentColor"><path d="M14 14V4.5L9.5 0H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2zM9.5 3A1.5 1.5 0 0 0 11 4.5h2V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h5.5v2z"/></svg>` },
+			  icon: `<svg width="24" height="24" viewBox="0 0 16 16" fill="currentColor"><path d="M14 14V4.5L9.5 0H4a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2zM9.5 3A1.5 1.5 0 0 0 11 4.5h2V14a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V2a1 1 0 0 1 1-1h5.5v2z"/></svg>` },
 			{ id: "webapi",  color: "#00695c", label: __("Web API"),       sub: __("Any REST endpoint"),
-			  icon: `<svg width="28" height="28" viewBox="0 0 16 16" fill="currentColor"><path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm7.5-6.923c-.67.204-1.335.82-1.887 1.855A7.97 7.97 0 0 0 5.145 4H7.5V1.077zM4.09 4a9.267 9.267 0 0 1 .64-1.539 6.7 6.7 0 0 1 .597-.933A7.025 7.025 0 0 0 2.255 4H4.09zm-.582 3.5c.03-.877.138-1.718.312-2.5H1.674a6.958 6.958 0 0 0-.656 2.5h2.49zM4.847 5a12.5 12.5 0 0 0-.338 2.5H7.5V5H4.847zM8.5 5v2.5h2.99a12.495 12.495 0 0 0-.337-2.5H8.5zM4.51 8.5a12.5 12.5 0 0 0 .337 2.5H7.5V8.5H4.51zm3.99 0V11h2.653c.187-.765.306-1.608.338-2.5H8.5zM5.145 12c.138.386.295.744.468 1.068.552 1.035 1.218 1.65 1.887 1.855V12H5.145zm.182 2.472a6.696 6.696 0 0 1-.597-.933A9.268 9.268 0 0 1 4.09 12H2.255a7.024 7.024 0 0 0 3.072 2.472zM3.82 11a13.652 13.652 0 0 1-.312-2.5h-2.49c.062.89.291 1.733.656 2.5H3.82zm6.853 3.472A7.024 7.024 0 0 0 13.745 12H11.91a9.27 9.27 0 0 1-.64 1.539 6.688 6.688 0 0 1-.597.933zM8.5 12v2.923c.67-.204 1.335-.82 1.887-1.855.173-.324.33-.682.468-1.068H8.5zm3.68-1h2.146c.365-.767.594-1.61.656-2.5h-2.49a13.65 13.65 0 0 1-.312 2.5zm2.802-3.5a6.959 6.959 0 0 0-.656-2.5H12.18c.174.782.282 1.623.312 2.5h2.49zM11.27 2.461c.247.464.462.98.64 1.539h1.835a7.024 7.024 0 0 0-3.072-2.472c.218.284.418.598.597.933zM10.855 4a7.966 7.966 0 0 0-.468-1.068C9.835 1.897 9.17 1.282 8.5 1.077V4h2.355z"/></svg>` },
+			  icon: `<svg width="24" height="24" viewBox="0 0 16 16" fill="currentColor"><path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm7.5-6.923c-.67.204-1.335.82-1.887 1.855A7.97 7.97 0 0 0 5.145 4H7.5V1.077zM4.09 4a9.267 9.267 0 0 1 .64-1.539 6.7 6.7 0 0 1 .597-.933A7.025 7.025 0 0 0 2.255 4H4.09zm-.582 3.5c.03-.877.138-1.718.312-2.5H1.674a6.958 6.958 0 0 0-.656 2.5h2.49zM4.847 5a12.5 12.5 0 0 0-.338 2.5H7.5V5H4.847zM8.5 5v2.5h2.99a12.495 12.495 0 0 0-.337-2.5H8.5zM4.51 8.5a12.5 12.5 0 0 0 .337 2.5H7.5V8.5H4.51zm3.99 0V11h2.653c.187-.765.306-1.608.338-2.5H8.5z"/></svg>` },
 		];
 		$body.html(`
 			<div class="ev-gd-step1">
-				<div class="ev-gd-grid">
+				<div class="ev-gd-sources-grid">
 					${SOURCES.map(s => `
 						<div class="ev-gd-card" data-src="${s.id}" role="button" tabindex="0">
-							<div class="ev-gd-card-icon" style="color:${s.color}">${s.icon}</div>
+							<div class="ev-gd-card-icon-wrap" style="--card-color:${s.color}">
+								${s.icon}
+							</div>
 							<div class="ev-gd-card-label">${s.label}</div>
 							<div class="ev-gd-card-sub">${s.sub}</div>
 						</div>
 					`).join("")}
 				</div>
-				<div class="ev-gd-target-row">
-					<span class="ev-gd-target-lbl">${__("Load into:")}</span>
-					<label class="ev-gd-radio"><input type="radio" name="ev_gd_target" value="new" checked> ${__("New Sheet")}</label>
-					<label class="ev-gd-radio"><input type="radio" name="ev_gd_target" value="current"> ${__("Current Sheet")}</label>
-				</div>
 			</div>
 		`);
 		$body.off(".gd")
-			.on("change.gd", "input[name=ev_gd_target]", (e) => { this._gd_target = $(e.currentTarget).val(); })
 			.on("click.gd keypress.gd", ".ev-gd-card", (e) => {
 				if (e.type === "keypress" && e.which !== 13) return;
 				this._gd_src($body, $(e.currentTarget).data("src"));
 			});
 	}
 
+
+
 	_gd_src($body, src) {
 		$body.off(".gd");
+		this._gd_set_step(2);
 		({ reports: () => this._gd_reports($body),
 		   gsheets: () => this._gd_gsheets($body),
 		   csv:     () => this._gd_csv($body),
@@ -2207,7 +2272,10 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 	_gd_wrap(title, inner) {
 		return `<div class="ev-gd-step2">
 			<div class="ev-gd-step2-hdr">
-				<button class="ev-gd-back btn btn-xs btn-default">← ${__("Back")}</button>
+				<button class="ev-gd-back ev-gd-back-btn">
+					<svg viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z"/></svg>
+					${__("Back")}
+				</button>
 				<span class="ev-gd-step2-title">${title}</span>
 			</div>
 			<div class="ev-gd-step2-body">${inner}</div>
@@ -2230,23 +2298,38 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 	_gd_reports($body) {
 		const doctype = this.board.doctype;
 		$body.html(this._gd_wrap(__("From Reports"), `
-			<div class="ev-gd-info" style="margin-bottom:8px">
-				📊 ${__("Showing reports for")} <strong>${frappe.utils.escape_html(doctype)}</strong>
-			</div>
-			<input type="text" class="form-control ev-gd-report-search" placeholder="${__("Search reports…")}" style="margin-bottom:8px">
-			<div class="ev-gd-report-list ev-gd-loading">${__("Loading…")}</div>
-			<div class="ev-gd-filters-wrap hide">
-				<div class="ev-gd-rpt-filter-hdr">
-					<span>${__("Filters for")} <strong class="ev-gd-report-sel-name"></strong></span>
-					<span class="ev-gd-filter-loading text-muted" style="font-size:11px"></span>
+			<div class="ev-gd-reports-split">
+				<div class="ev-gd-rpt-left">
+					<div class="ev-gd-rpt-left-hdr">
+						<span class="ev-gd-section-lbl">${__("Reports")} <span class="ev-gd-dt-badge">${frappe.utils.escape_html(doctype)}</span></span>
+					</div>
+					<div class="ev-gd-search-wrap">
+						<svg class="ev-gd-search-icon" viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.099zm-5.242 1.656a5.5 5.5 0 1 1 0-11 5.5 5.5 0 0 1 0 11z"/></svg>
+						<input type="text" class="ev-gd-report-search ev-gd-search-input" placeholder="${__("Search reports…")}">
+					</div>
+					<div class="ev-gd-report-list ev-gd-loading">
+						<div class="ev-gd-loading-dots"><span></span><span></span><span></span></div>
+					</div>
 				</div>
-				<div class="ev-gd-rpt-filter-rows"></div>
+				<div class="ev-gd-rpt-right">
+					<div class="ev-gd-rpt-right-placeholder">
+						<svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" width="40" height="40" opacity=".25"><rect x="8" y="6" width="32" height="36" rx="3"/><line x1="14" y1="16" x2="34" y2="16"/><line x1="14" y1="22" x2="34" y2="22"/><line x1="14" y1="28" x2="26" y2="28"/></svg>
+						<p>${__("Select a report to configure filters")}</p>
+					</div>
+					<div class="ev-gd-filters-wrap hide">
+						<div class="ev-gd-rpt-filter-hdr">
+							<span class="ev-gd-section-lbl">${__("Filters")} — <strong class="ev-gd-report-sel-name"></strong></span>
+							<span class="ev-gd-filter-loading ev-gd-filter-loading-txt"></span>
+						</div>
+						<div class="ev-gd-rpt-filter-rows"></div>
+					</div>
+					<div class="ev-gd-preview-area"></div>
+					<div class="ev-gd-actions hide">
+						<button class="ev-gd-preview-btn btn btn-sm btn-default" disabled>${__("Preview")}</button>
+						<button class="ev-gd-load-btn btn btn-sm btn-primary" disabled>${__("Load →")}</button>
+					</div>
+				</div>
 			</div>
-			<div class="ev-gd-actions">
-				<button class="btn btn-sm btn-default ev-gd-preview-btn" disabled>${__("Preview")}</button>
-				<button class="btn btn-sm btn-primary ev-gd-load-btn" disabled>${__("Load →")}</button>
-			</div>
-			<div class="ev-gd-preview-area"></div>
 		`));
 		let _all = [], _sel = null, _res = null, _filter_defs = [];
 
@@ -2256,7 +2339,7 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		/** Fetch report JS via get_script, eval in global scope, read frappe.query_reports[name].filters */
 		const _load_filters = (report_name) => {
 			const $rows = $body.find(".ev-gd-rpt-filter-rows");
-			const $lbl  = $body.find(".ev-gd-filter-loading");
+			const $lbl  = $body.find(".ev-gd-filter-loading-txt");
 			$rows.html(""); $lbl.text(__("Loading filters…"));
 			frappe.call({
 				method: "frappe.desk.query_report.get_script",
@@ -2265,25 +2348,16 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 					$lbl.text("");
 					let filters = [];
 					try {
-						// frappe.query_reports may not exist yet — initialise defensively
 						if (!frappe.query_reports) frappe.query_reports = {};
-
 						const script = r.message?.script || (typeof r.message === "string" ? r.message : "");
-						if (script) {
-							// Indirect eval → runs in global scope (same as Frappe's own report runner)
-							// This populates frappe.query_reports[report_name] = { filters: [...] }
-							// eslint-disable-next-line no-eval
-							(0, eval)(script);
-						}
-						filters = (frappe.query_reports?.[report_name]?.filters || [])
-							.filter(f => f && f.fieldname);
+						if (script) { (0, eval)(script); }
+						filters = (frappe.query_reports?.[report_name]?.filters || []).filter(f => f && f.fieldname);
 					} catch (e) {
 						console.warn("[GetData] report filter eval error:", e);
 					}
-
 					_filter_defs = filters;
 					if (!filters.length) {
-						$rows.html(`<div class="ev-gd-empty" style="padding:10px 0">${__("This report has no filters.")}</div>`);
+						$rows.html(`<div class="ev-gd-empty">${__("No filters for this report.")}</div>`);
 						return;
 					}
 					$rows.html(filters.map(_filter_row).join(""));
@@ -2301,7 +2375,7 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 					$l.html(list.length
 						? list.map(x => `<div class="ev-gd-report-item" data-name="${frappe.utils.escape_html(x.name)}">
 								<div class="ev-gd-report-name">${frappe.utils.escape_html(x.name)}</div>
-								<div class="ev-gd-report-meta">${frappe.utils.escape_html(x.report_type || "")}</div>
+								<div class="ev-gd-report-type-badge">${frappe.utils.escape_html(x.report_type || "")}</div>
 							</div>`).join("")
 						: `<div class="ev-gd-empty">${__("No reports found for")} <strong>${frappe.utils.escape_html(doctype)}</strong></div>`);
 				};
@@ -2314,7 +2388,8 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 					$(e.currentTarget).addClass("ev-gd-selected");
 					_sel = $(e.currentTarget).data("name");
 					$body.find(".ev-gd-report-sel-name").text(_sel);
-					$body.find(".ev-gd-filters-wrap").removeClass("hide");
+					$body.find(".ev-gd-rpt-right-placeholder").hide();
+					$body.find(".ev-gd-filters-wrap, .ev-gd-actions").removeClass("hide");
 					$body.find(".ev-gd-preview-btn, .ev-gd-load-btn").prop("disabled", false);
 					_res = null; $body.find(".ev-gd-preview-area").empty();
 					_load_filters(_sel);
@@ -2345,7 +2420,7 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 				const keys = cols.map(c => c.fieldname || c.label);
 				const rows = (res.result || []).filter(r => !r.is_subtotal && !r.is_total)
 					.map(r => keys.map((k, i) => Array.isArray(r) ? r[i] : (r[k] ?? "")));
-				this._gd_load(headers, rows, _sel, { name: _sel, filter_defs: _filter_defs, current_filters: _get_filters() }, keys); this._gd_d.hide();
+				this._gd_load(headers, rows, _sel, { name: _sel, filter_defs: _filter_defs, current_filters: _get_filters() }, keys); this._gd_close();
 			};
 			_res ? go(_res) : _run(go);
 		});
@@ -2386,7 +2461,7 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 			});
 		};
 		$body.on("click.gd", ".ev-gd-preview-btn", () => _fetch(() => $body.find(".ev-gd-preview-area").html(this._gd_preview_tbl(_h, _r))));
-		$body.on("click.gd", ".ev-gd-load-btn", () => _fetch(() => { this._gd_load(_h, _r, $body.find(".ev-gd-gs-tab").val().trim() || "Google Sheet"); this._gd_d.hide(); }));
+		$body.on("click.gd", ".ev-gd-load-btn", () => _fetch(() => { this._gd_load(_h, _r, $body.find(".ev-gd-gs-tab").val().trim() || "Google Sheet"); this._gd_close(); }));
 	}
 
 	// ── CSV ───────────────────────────────────────────────────────────────────
@@ -2450,7 +2525,7 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		});
 		$body.on("click.gd", ".ev-gd-load-btn", () => {
 			if (!_h.length) { frappe.msgprint(__("No data — click Preview first.")); return; }
-			this._gd_load(_h, _r, "CSV Import"); this._gd_d.hide();
+			this._gd_load(_h, _r, "CSV Import"); this._gd_close();
 		});
 	}
 
@@ -2505,7 +2580,7 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		});
 		$body.on("click.gd", ".ev-gd-load-btn", () => {
 			if (!_h.length) { frappe.msgprint(__("No data — click Preview first.")); return; }
-			this._gd_load(_h, _r, "JSON Import"); this._gd_d.hide();
+			this._gd_load(_h, _r, "JSON Import"); this._gd_close();
 		});
 	}
 
@@ -2558,7 +2633,7 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		$body.on("click.gd", ".ev-gd-load-btn", () => {
 			const t = _tables[+$body.find(".ev-gd-tbl-sel").val() || 0];
 			if (!t) return;
-			this._gd_load(t.headers, t.rows, "PDF Table"); this._gd_d.hide();
+			this._gd_load(t.headers, t.rows, "PDF Table"); this._gd_close();
 		});
 	}
 
@@ -2615,7 +2690,7 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 			});
 		};
 		$body.on("click.gd", ".ev-gd-preview-btn", () => _fetch(() => $body.find(".ev-gd-preview-area").html(this._gd_preview_tbl(_h, _r))));
-		$body.on("click.gd", ".ev-gd-load-btn", () => _fetch(() => { this._gd_load(_h, _r, "Web API"); this._gd_d.hide(); }));
+		$body.on("click.gd", ".ev-gd-load-btn", () => _fetch(() => { this._gd_load(_h, _r, "Web API"); this._gd_close(); }));
 	}
 
 	// ── Shared load + utilities ───────────────────────────────────────────────

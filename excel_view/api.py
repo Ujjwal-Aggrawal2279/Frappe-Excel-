@@ -3644,8 +3644,86 @@ def smart_lookup_suggest(
 	claimed_src = {s["source_col"] for s in suggestions}
 	claimed_tgt = {s["target_col"] for s in suggestions}
 
+	# ── Layer 0c: Doctype-name FK detection (structural, no data needed) ────────
+	# Catches: IGA.customer + target_doctype="Customer" → JOIN IGA.customer→Customer.name
+	# AND:    Customer.name + source_doctype="Customer" → JOIN Customer.name→report.customer
+	#
+	# Pure structural signal: column fieldname == snake_case(doctype) is a definitive FK.
+	# Works even when the report is filtered (low sample overlap) or when there's no meta.
+
+	def _doctype_fk_bonus(si_idx, ti_idx):
+		"""Return a 0–0.05 data-overlap bonus to add to structural base confidence."""
+		if not src_sample or not tgt_sample:
+			return 0.0
+		src_v = {str(r[si_idx]) for r in src_sample if si_idx < len(r) and str(r[si_idx]).strip()}
+		tgt_v = {str(r[ti_idx]) for r in tgt_sample if ti_idx < len(r) and str(r[ti_idx]).strip()}
+		if not src_v or not tgt_v:
+			return 0.0
+		ratio = len(src_v & tgt_v) / len(src_v)
+		return round(ratio * 0.05, 3)
+
+	# 0c-A: source column named like target_doctype → FK to target.name
+	if target_doctype and "name" not in claimed_tgt:
+		dt_snake = frappe.scrub(target_doctype)   # "Customer" → "customer"
+		name_ti = next(
+			(i for i, tf in enumerate(tgt_headers) if tf["fieldname"] == "name"), None
+		)
+		if name_ti is not None:
+			for si, sf in enumerate(src_headers):
+				if sf["fieldname"] in claimed_src:
+					continue
+				fn = sf["fieldname"]
+				if fn == dt_snake or fn == dt_snake + "_id":
+					bonus = _doctype_fk_bonus(si, name_ti)
+					suggestions.append({
+						"source_col": fn,
+						"target_col": "name",
+						"strategy":   "primary_key_match",
+						"confidence": round(min(0.99, 0.94 + bonus), 3),
+						"reason":     (
+							f"'{sf.get('label') or fn}' column name matches DocType "
+							f"'{target_doctype}' — foreign key on {target_doctype}.name"
+						),
+					})
+					claimed_src.add(fn)
+					claimed_tgt.add("name")
+					break
+
+	# 0c-B: source.name (primary key) → target column named like source_doctype
+	if source_doctype and "name" not in claimed_src:
+		dt_snake = frappe.scrub(source_doctype)
+		src_name_si = next(
+			(i for i, sf in enumerate(src_headers) if sf["fieldname"] == "name"), None
+		)
+		if src_name_si is not None:
+			for ti, tf in enumerate(tgt_headers):
+				if tf["fieldname"] in claimed_tgt:
+					continue
+				fn = tf["fieldname"]
+				if fn == dt_snake or fn == dt_snake + "_id":
+					bonus = _doctype_fk_bonus(src_name_si, ti)
+					suggestions.append({
+						"source_col": "name",
+						"target_col": fn,
+						"strategy":   "primary_key_match",
+						"confidence": round(min(0.99, 0.94 + bonus), 3),
+						"reason":     (
+							f"'{tf.get('label') or fn}' column name matches source DocType "
+							f"'{source_doctype}' — join on {source_doctype}.name → {fn}"
+						),
+					})
+					claimed_src.add("name")
+					claimed_tgt.add(fn)
+					break
+
+	# Refresh claims after Layer 0c
+	claimed_src = {s["source_col"] for s in suggestions}
+	claimed_tgt = {s["target_col"] for s in suggestions}
+
 	# ── Layer 0a: Primary Key Match — source values → target `name` column ─────
 	# Skip source columns that already matched via exact fieldname (Layer 2a).
+	# Threshold lowered to 0.3: a filtered report may show only a subset of rows
+	# but the join is still correct (e.g. 6/20 IGA customers appear in Customer sample).
 	if src_sample and tgt_sample:
 		name_ti = next(
 			(i for i, tf in enumerate(tgt_headers) if tf["fieldname"] == "name"), None
@@ -3682,11 +3760,12 @@ def smart_lookup_suggest(
 					if total == 0:
 						continue
 					ratio = overlap / total
-					if ratio >= 0.5:
+					if ratio >= 0.3:
 						src_set_py = set(src_raw)
 						union      = len(src_set_py | tgt_name_set)
 						jaccard    = overlap / union if union else 0.0
-						confidence = round(min(0.99, 0.85 + jaccard * 0.14), 3)
+						# Scale: 0.3 ratio→~0.82, 1.0 ratio→0.99
+						confidence = round(min(0.99, 0.72 + ratio * 0.27), 3)
 						suggestions.append({
 							"source_col": sf["fieldname"],
 							"target_col": "name",
@@ -3733,7 +3812,7 @@ def smart_lookup_suggest(
 					tgt_set = set(tgt_raw)
 					inter   = len(src_set & tgt_set)
 					ratio   = inter / len(src_set) if src_set else 0.0
-					if ratio >= 0.5 and ratio > best_j:
+					if ratio >= 0.3 and ratio > best_j:
 						best_j, best_tf, best_cnt = ratio, tf, inter
 
 				if best_tf:
@@ -4215,3 +4294,36 @@ def smart_lookup_fetch(
 			pass
 
 	return ""
+
+
+# ── V3.3 — Activity column tag helpers ────────────────────────────────────────
+
+@frappe.whitelist()
+def get_doctype_tags(doctype):
+	"""Return all tags used on this DocType (distinct, sorted)."""
+	frappe.has_permission(doctype, "read", throw=True)
+	rows = frappe.get_all(
+		"Tag Link",
+		filters={"document_type": doctype},
+		fields=["tag"],
+		distinct=True,
+		order_by="tag asc",
+		limit=200,
+	)
+	return [r.tag for r in rows if r.tag]
+
+
+@frappe.whitelist()
+def add_doc_tag(doctype, docname, tag):
+	"""Add a tag to a document."""
+	frappe.has_permission(doctype, "write", throw=True)
+	from frappe.desk.doctype.tag.tag import add_tag
+	return add_tag(tag, doctype, docname)
+
+
+@frappe.whitelist()
+def remove_doc_tag(doctype, docname, tag):
+	"""Remove a tag from a document."""
+	frappe.has_permission(doctype, "write", throw=True)
+	from frappe.desk.doctype.tag.tag import remove_tag
+	return remove_tag(tag, doctype, docname)
