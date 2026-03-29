@@ -23,10 +23,8 @@ dependencies = [
     "sentence-transformers>=2.2",  # Semantic embeddings for GenBI join suggestions
     "pdfplumber>=0.10",       # PDF export parsing (V2.5+)
 
-    # ── V3 IntelliFlow — no new Python packages ────────────────────────────────
-    # V3 is entirely client-side JS. New endpoints (bulk_fetch_for_duckdb,
-    # get_doctype_schema) use core Frappe ORM only — no extra Python deps.
-    # New JS packages (dagre, sql-formatter, comlink) are in package.json.
+    # ── V3.4 Arrow IPC Transport ───────────────────────────────────────────────
+    "pyarrow>=14.0",          # Arrow IPC binary stream for bulk_fetch_for_duckdb (3-5x smaller than JSON)
 ]
 
 [build-system]
