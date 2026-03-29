@@ -27,12 +27,18 @@ import Papa from "papaparse";
 import Pickr from "@simonwep/pickr";
 // numfmt v3.x uses named ESM exports — import the `format` function
 import { format as numfmt_format } from "numfmt";
+// V3 IntelliFlow — dagre (auto-layout) + sql-formatter (SQL display)
+// (idb is NOT imported here — duckdb_engine_v2 uses inline vanilla IDB helpers)
+import * as dagre from "dagre";
+import * as sqlFormatter from "sql-formatter";
 
 // Expose globally — sub-modules reference these via window.*
 window.Handsontable = Handsontable;
 window.HyperFormula = HyperFormula;
 window.Papa = Papa;
 window.Pickr = Pickr;
+window.dagre = dagre;
+window.sqlFormatter = sqlFormatter;
 // Expose as window.numfmt(pattern, value) for currency_cell.js
 window.numfmt = numfmt_format;
 
@@ -58,6 +64,14 @@ import "./utils/field_type_map.js";
 import "./utils/frappe_formula_plugin.js";
 import "./utils/formula_bridge.js";
 import "./utils/export_manager.js";
+// V3.4 — PlotEngine (Observable Plot + uPlot) replaces frappe.Chart globally
+import "./utils/plot_engine.js";
+// V3.4 — DuckDB-WASM engine for client-side pivot SQL (lazy-loaded)
+import "./utils/duckdb_engine.js";
+// V3 IntelliFlow — QueryAST + SQLGenerator + DuckDB V2
+import "./utils/query_ast.js";
+import "./utils/sql_generator.js";
+import "./utils/duckdb_engine_v2.js";
 
 // ── 3. Custom cell types ──────────────────────────────────────────────────────
 // Must be imported BEFORE any component that references Handsontable.cellTypes.*
@@ -75,11 +89,14 @@ import "./components/field_picker.js";
 import "./components/workbook_manager.js";  // V2.1 — Saved Workbooks
 import "./components/status_bar.js";        // V2.2 — Status Bar
 // V2.4 — IntelliFlow Join Canvas + Collaboration (Phase 3) - Now using vanilla JS
+import "./components/query_flow_panel.js";  // V3 — QueryFlowPanel (IntelliFlow V3)
 import "./components/join_canvas.js";       // V2.4 — IntelliFlow Join Canvas
 import "./components/sheet_manager.js";    // V2.5 — Multi-Sheet Workbooks
 import "./components/cf_manager.js";      // V2.6 — Conditional Formatting
 import "./components/chart_manager.js";   // V2.6 — Insert Charts
 import "./components/pivot_builder.js";   // V2.6 — PivotTable Builder
+import "./components/dashboard_manager.js"; // V3.4 — Dashboard Sheets
+import "./components/tree_import.js";       // V3.3 — Tree-View Bulk Import
 import "./components/excel_board.js";
 
 // ── 5. Signal that deps are ready ─────────────────────────────────────────────

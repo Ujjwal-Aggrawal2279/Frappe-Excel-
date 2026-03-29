@@ -4,10 +4,29 @@
   "description": "Frappe Excel View — spreadsheet experience for any DocType",
   "license": "MIT",
   "dependencies": {
+    "@duckdb/duckdb-wasm": "^1.33.1-dev20.0",
+    "@observablehq/plot": "^0.6.17",
+    "@simonwep/pickr": "^1.9.0",
+    "comlink": "^4.4.2",
+    "dagre": "^0.8.5",
     "handsontable": "6.2.2",
     "hyperformula": "^2.7.0",
+    "numfmt": "^3.2.4",
     "papaparse": "^5.4.1",
-    "@simonwep/pickr": "^1.9.0",
-    "numfmt": "^3.2.4"
+    "sql-formatter": "^15.7.3",
+    "uplot": "^1.6.32"
+  },
+  "_packageNotes": {
+    "handsontable": "Spreadsheet grid engine (v6.2.2 pinned — free license boundary)",
+    "hyperformula": "Excel-compatible formula engine powering all ERP-native formulas",
+    "@duckdb/duckdb-wasm": "Client-side analytical SQL engine (WASM) for PivotBuilder and IntelliFlow V3 queries",
+    "@observablehq/plot": "Declarative chart library used by ChartManager for insert-chart feature",
+    "uplot": "High-performance time-series chart library for sparklines and trend charts",
+    "@simonwep/pickr": "Color picker used by Focus Cell, Conditional Formatting, and cell color features",
+    "papaparse": "CSV parser for bulk import and DuckDB CSV ingestion",
+    "numfmt": "Number/currency formatting matching Excel format strings exactly",
+    "dagre": "[V3 IntelliFlow] Directed graph auto-layout algorithm — arranges canvas nodes left-to-right DAG",
+    "sql-formatter": "[V3 IntelliFlow] SQL pretty-printer — formats generated DuckDB SQL in the SQL preview panel",
+    "comlink": "[V3 IntelliFlow] Web Worker RPC wrapper — reserved for future DuckDB Worker thread isolation (not yet used in production)"
   }
 }

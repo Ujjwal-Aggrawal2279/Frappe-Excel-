@@ -87,6 +87,7 @@ frappe.views.excel.SheetManager = class SheetManager {
 					options: [
 						__("Data from DocType"),
 						__("Blank Sheet"),
+						__("Dashboard"),
 					],
 					default: __("Data from DocType"),
 					onchange() { d.refresh_dependency(); },
@@ -113,6 +114,8 @@ frappe.views.excel.SheetManager = class SheetManager {
 				d.hide();
 				if (vals.sheet_type === __("Blank Sheet")) {
 					this.add_blank_sheet(vals.label || __("Sheet"));
+				} else if (vals.sheet_type === __("Dashboard")) {
+					this.add_dashboard_sheet(vals.label || __("Dashboard"));
 				} else {
 					if (!vals.doctype) return;
 					this.add_sheet(vals.doctype, vals.label || vals.doctype);
@@ -120,6 +123,20 @@ frappe.views.excel.SheetManager = class SheetManager {
 			},
 		});
 		d.show();
+	}
+
+	/**
+	 * Add a new Dashboard sheet tab.
+	 * @param {string} label
+	 * @returns {Object} new sheet state
+	 */
+	add_dashboard_sheet(label = __("Dashboard")) {
+		const state = this._make_state({ label, doctype: null, is_blank: false, is_dashboard: true });
+		this._sheets.set(state.id, state);
+		this._render_tabs();
+		this.switch_to(state.id); // saves outgoing HOT state, sets _active_id, calls _lazy_fetch → _activate
+		this._auto_persist_sheets();
+		return state;
 	}
 
 	/**
@@ -147,13 +164,16 @@ frappe.views.excel.SheetManager = class SheetManager {
 	 * @param {Object[]} data_rows    - array of row objects keyed by col.data
 	 * @returns {string} new sheet id
 	 */
-	add_blank_sheet_with_data(label, col_configs, data_rows, report_meta = null) {
+	add_blank_sheet_with_data(label, col_configs, data_rows, report_meta = null, query_ast = null) {
 		const s = this._make_state({ doctype: null, label: label || __("Pivot"), is_blank: true });
 		s.hf_sheet_id    = this.board.formula_bridge.add_hf_sheet(s.label);
 		s.is_blank       = true;
 		s.columns_config = col_configs;
 		s.data           = data_rows;
 		if (report_meta) s.report_meta = report_meta;
+		// DuckDB query sheets: store the serialized AST instead of data rows.
+		// On restore the query re-runs against fresh data automatically.
+		if (query_ast) s.query_ast = typeof query_ast === "string" ? query_ast : JSON.stringify(query_ast);
 		this._sheets.set(s.id, s);
 		this._render_tabs();
 		this.switch_to(s.id);
@@ -193,11 +213,6 @@ frappe.views.excel.SheetManager = class SheetManager {
 		this.switch_to(s.id);
 		this._auto_persist_sheets();
 
-		// Trigger IntelliLookup detection
-		const base = this._sheets.get(this._get_sheet0_id());
-		if (base && base.doctype !== doctype) {
-			this._trigger_intellilookup(base.doctype, doctype, s.id);
-		}
 		return s.id;
 	}
 
@@ -222,17 +237,24 @@ frappe.views.excel.SheetManager = class SheetManager {
 		// Recompute pivot sheet from live source data on every tab switch
 		if (next.pivot_config) this._recompute_pivot_sheet(next);
 
+		// DuckDB query sheet handling:
+		//  - stale → trigger re-run with apply_when_done=true
+		//  - not stale but data ready (background pre-warm finished) → apply directly below
+		if (next.query_ast && next._data_is_stale) this._rerun_query_ast_sheet(next, true);
+
 		this._active_id = id;
 		this._render_tabs();
-		this._hide_ilk_banner();
+		// Reset secondary-sheet loading flag on every tab switch (prevents stuck state)
+		this.board._sec_sheet_loading = false;
 
 		if (next.data && next.data.length) {
-			// Data already fetched — swap directly
+			// Data already fetched (or pre-warmed in background) — swap directly
 			this._apply_sheet(next);
-		} else {
+		} else if (!next.query_ast) {
 			// Lazy fetch — show loading state, fetch data for next doctype
 			this._lazy_fetch(next);
 		}
+		// else: query_ast sheet with no data yet → _rerun_query_ast_sheet will call _apply_sheet
 	}
 
 	/** Remove a non-base sheet tab. */
@@ -303,6 +325,8 @@ frappe.views.excel.SheetManager = class SheetManager {
 				label: s.label,
 				doctype: s.doctype,
 				is_blank: s.is_blank || false,
+				is_dashboard: s.is_dashboard || false,
+				dashboard_widgets: s.dashboard_widgets || [],
 				hf_sheet_id: s.hf_sheet_id,
 				col_widths: s.col_widths,
 				frozen: s.frozen,
@@ -321,9 +345,14 @@ frappe.views.excel.SheetManager = class SheetManager {
 			};
 			// Pivot sheets: config only — data recomputed on restore.
 			// Report sheets: report_meta saved; data re-fetched on restore (auto-refresh).
+			// DuckDB query sheets: save only the AST — query re-runs on restore (fresh data, compact).
 			// Plain blank sheets (CSV/JSON import): persist up to 200 rows.
-			if (s.is_blank && s.data?.length && !s.pivot_config && !s.report_meta?.name) {
-				entry.blank_data = s.data.slice(0, 200);
+			if (s.is_blank && !s.pivot_config && !s.report_meta?.name) {
+				if (s.query_ast) {
+					entry.query_ast = s.query_ast;  // compact serialized AST, never inflated by rows
+				} else if (s.data?.length) {
+					entry.blank_data = s.data.slice(0, 200);
+				}
 			}
 			return entry;
 		});
@@ -339,6 +368,20 @@ frappe.views.excel.SheetManager = class SheetManager {
 
 		// Skip first entry (Sheet 0 = base doctype, already set up)
 		sheets_config.slice(1).forEach((cfg) => {
+			// Dashboard sheet — no DocType, no HOT data
+			if (cfg.is_dashboard) {
+				const state = this._make_state({
+					label: cfg.label || __("Dashboard"),
+					doctype: null,
+					id: cfg.id,
+					is_blank: false,
+					is_dashboard: true,
+				});
+				state.dashboard_widgets = cfg.dashboard_widgets || [];
+				this._sheets.set(state.id, state);
+				return;
+			}
+
 			const s = this._make_state({
 				doctype: cfg.doctype,
 				label: cfg.label,
@@ -361,6 +404,11 @@ frappe.views.excel.SheetManager = class SheetManager {
 				if (cfg.pivot_config) {
 					// Pivot sheet: start with empty data; recomputed after all sheets are restored.
 					s.data = this._blank_data();
+				} else if (cfg.query_ast) {
+					// DuckDB query sheet: start empty; query re-runs asynchronously after restore.
+					s.data = this._blank_data();
+					s.query_ast = cfg.query_ast;
+					s._data_is_stale = true;
 				} else {
 					// Regular blank sheet: restore saved data or generate empty rows.
 					s.data = cfg.blank_data?.length ? cfg.blank_data : this._blank_data();
@@ -378,6 +426,26 @@ frappe.views.excel.SheetManager = class SheetManager {
 			const s0 = this._sheets.get(this._get_sheet0_id());
 			if (s0) {
 				s0.lookup_cols = s0_cfg.lookup_cols || [];
+				// Restore original Sheet 0 id so cross-sheet refs (e.g. dashboard widget
+				// sheet_id) remain valid after a page reload.  setup() always generates a
+				// new id via Date.now(); restore() must restamp it to the saved value.
+				//
+				// IMPORTANT: use Map-rebuild (not delete+set) to preserve insertion order.
+				// Map.delete+set moves the entry to the END — _get_sheet0_id() returns the
+				// first key, so a reordered map would make Dashboard the "base" sheet.
+				if (s0_cfg.id && s0_cfg.id !== s0.id) {
+					const rebuilt = new Map();
+					for (const [k, v] of this._sheets) {
+						if (k === s0.id) {
+							s0.id = s0_cfg.id;
+							rebuilt.set(s0.id, s0);
+						} else {
+							rebuilt.set(k, v);
+						}
+					}
+					this._sheets = rebuilt;
+					this._active_id = s0.id;
+				}
 			}
 		}
 
@@ -388,6 +456,10 @@ frappe.views.excel.SheetManager = class SheetManager {
 		for (const s of this._sheets.values()) {
 			if (s.pivot_config) this._recompute_pivot_sheet(s);
 		}
+
+		// Pre-warm DuckDB + re-run query sheets in background (fire and forget)
+		// Kick off WASM init immediately so it's ready before the user clicks the tab.
+		this._prewarm_and_rerun_ast_sheets();
 	}
 
 	/**
@@ -411,169 +483,8 @@ frappe.views.excel.SheetManager = class SheetManager {
 
 	destroy() {
 		if (this.$tabs) this.$tabs.remove();
-		this._hide_ilk_banner();
 	}
 
-	// ── IntelliLookup ─────────────────────────────────────────────────────
-
-	_trigger_intellilookup(src_doctype, tgt_doctype, tgt_sheet_id) {
-		frappe.call({
-			method: "excel_view.api.detect_lookup",
-			args: { src_doctype, tgt_doctype },
-			callback: (r) => {
-				const candidates = r.message || [];
-				if (!candidates.length) return;
-				const best = candidates[0];
-				if (best.confidence >= 0.4) {
-					this._show_ilk_banner(src_doctype, tgt_doctype, best, tgt_sheet_id);
-				}
-			},
-		});
-	}
-
-	_show_ilk_banner(src_doctype, tgt_doctype, candidate, tgt_sheet_id) {
-		this._hide_ilk_banner();
-
-		const $banner = $(`
-			<div class="ev-intellilookup-banner">
-				<span class="ev-ilk-icon">💡</span>
-				<span class="ev-ilk-msg">
-					<b>${frappe.utils.escape_html(candidate.label || candidate.src_field)}</b>
-					${__("in")} <b>${frappe.utils.escape_html(src_doctype)}</b>
-					${__("links to")} <b>${frappe.utils.escape_html(tgt_doctype)}</b>.
-				</span>
-				<a class="ev-ilk-apply">${__("Add lookup columns →")}</a>
-				<a class="ev-ilk-dismiss">✕</a>
-			</div>
-		`);
-
-		$banner.find(".ev-ilk-apply").on("click", () => {
-			this._open_lookup_picker(src_doctype, tgt_doctype, candidate, tgt_sheet_id);
-		});
-		$banner.find(".ev-ilk-dismiss").on("click", () => this._hide_ilk_banner());
-
-		// Insert at top of ev-grid-wrapper (this.$wrapper IS the wrapper)
-		this.$ilk_banner = $banner;
-		this.board.$wrapper.prepend($banner);
-	}
-
-	_hide_ilk_banner() {
-		if (this.$ilk_banner) {
-			this.$ilk_banner.remove();
-			this.$ilk_banner = null;
-		}
-	}
-
-	_open_lookup_picker(src_doctype, tgt_doctype, candidate, tgt_sheet_id) {
-		// Load tgt doctype meta to show field checkboxes
-		frappe.model.with_doctype(tgt_doctype, () => {
-			const meta = frappe.get_meta(tgt_doctype);
-			const pickable = meta.fields.filter(
-				(f) =>
-					!["Section Break", "Column Break", "HTML", "Table"].includes(f.fieldtype) &&
-					f.fieldname !== "name"
-			);
-
-			const fields_html = pickable
-				.map(
-					(f) => `<label class="ev-ilk-field-row">
-					<input type="checkbox" data-fieldname="${f.fieldname}" data-label="${frappe.utils.escape_html(f.label)}">
-					<span>${frappe.utils.escape_html(f.label || f.fieldname)}</span>
-				</label>`
-				)
-				.join("");
-
-			const d = new frappe.ui.Dialog({
-				title: __("Lookup from {0}", [tgt_doctype]),
-				fields: [
-					{
-						fieldtype: "HTML",
-						options: `
-							<p style="font-size:12px;color:var(--text-muted)">
-								${__("Join key:")} <b>${candidate.label || candidate.src_field}</b>
-								→ <b>${candidate.tgt_field}</b>
-							</p>
-							<p style="font-size:12px;margin-bottom:6px">${__("Select fields to pull:")}</p>
-							<div class="ev-ilk-field-list" style="max-height:260px;overflow-y:auto">
-								${fields_html}
-							</div>
-						`,
-					},
-				],
-				primary_action_label: __("Add Lookup Columns"),
-				primary_action: () => {
-					const checked = [...d.$wrapper.find(".ev-ilk-field-list input:checked")];
-					if (!checked.length) {
-						frappe.show_alert({ message: __("Select at least one field"), indicator: "orange" }, 3);
-						return;
-					}
-					const return_fields = checked.map((el) => ({
-						fieldname: el.dataset.fieldname,
-						label: el.dataset.label,
-					}));
-					d.hide();
-					this._apply_lookup(src_doctype, tgt_doctype, candidate, return_fields, tgt_sheet_id);
-				},
-			});
-			d.show();
-
-			// Style field list
-			d.$wrapper.find(".ev-ilk-field-list").css({ display: "flex", flexDirection: "column", gap: "4px" });
-			d.$wrapper.find(".ev-ilk-field-row").css({ display: "flex", alignItems: "center", gap: "8px", fontSize: "12px" });
-		});
-	}
-
-	_apply_lookup(src_doctype, tgt_doctype, candidate, return_fields, tgt_sheet_id) {
-		const base_data = this.board.list_view.data;
-		const tgt_sheet = this._sheets.get(tgt_sheet_id);
-		const tgt_data = tgt_sheet?.data || [];
-
-		if (!tgt_data.length) {
-			frappe.show_alert({ message: __("Target sheet has no data yet. Click its tab first."), indicator: "orange" }, 4);
-			return;
-		}
-
-		// Build index: tgt_field value → tgt row
-		const tgt_index = new Map();
-		tgt_data.forEach((r) => {
-			const key = r[candidate.tgt_field];
-			if (key != null) tgt_index.set(String(key), r);
-		});
-
-		// Inject values into base_data
-		base_data.forEach((row) => {
-			const key = String(row[candidate.src_field] || "");
-			const match = tgt_index.get(key);
-			return_fields.forEach(({ fieldname }) => {
-				const col_key = `${tgt_doctype}__lookup__${fieldname}`;
-				row[col_key] = match ? (match[fieldname] ?? "") : "";
-			});
-		});
-
-		// Build virtual lookup columns
-		const lookup_cols = return_fields.map(({ fieldname, label }) => ({
-			data: `${tgt_doctype}__lookup__${fieldname}`,
-			title: `${tgt_doctype}: ${label}`,
-			type: "text",
-			width: 160,
-			readOnly: true,
-			_readonly: true,
-			_is_lookup_col: true,
-		}));
-
-		// Track on base sheet state for workbook save
-		const s0 = this._sheets.get(this._get_sheet0_id());
-		if (s0) s0.lookup_cols = (s0.lookup_cols || []).concat(return_fields.map((f) => ({
-			doctype: tgt_doctype,
-			...f,
-			src_field: candidate.src_field,
-			tgt_field: candidate.tgt_field,
-		})));
-
-		this._hide_ilk_banner();
-		this.board._inject_lookup_columns(lookup_cols, base_data);
-		frappe.show_alert({ message: __("Lookup columns added from {0}", [tgt_doctype]), indicator: "green" }, 3);
-	}
 
 	// ── Tab Strip DOM ─────────────────────────────────────────────────────
 
@@ -590,10 +501,16 @@ frappe.views.excel.SheetManager = class SheetManager {
 			.map((s) => {
 				const is_active = s.id === this._active_id;
 				const is_base   = s.id === this._get_sheet0_id();
-				const tip       = s.is_blank ? __("Blank Sheet") : frappe.utils.escape_html(s.doctype || "");
-				const icon      = s.is_blank
-					? `<span class="ev-tab-blank-icon" title="${__("Blank Sheet")}">✎</span>`
-					: "";
+				const tip       = s.is_dashboard
+					? __("Dashboard")
+					: s.is_blank
+						? __("Blank Sheet")
+						: frappe.utils.escape_html(s.doctype || "");
+				const icon      = s.is_dashboard
+					? `<span class="ev-tab-blank-icon" title="${__("Dashboard")}">⊞</span>`
+					: s.is_blank
+						? `<span class="ev-tab-blank-icon" title="${__("Blank Sheet")}">✎</span>`
+						: "";
 				return `
 				<div class="ev-sheet-tab${is_active ? " ev-sheet-tab--active" : ""}${s.is_blank ? " ev-sheet-tab--blank" : ""}"
 					data-id="${s.id}" title="${tip}">
@@ -649,16 +566,16 @@ frappe.views.excel.SheetManager = class SheetManager {
 	_save_hot_state(id) {
 		if (!id) return;
 		const s = this._sheets.get(id);
-		if (!s || !this.board.hot) return;
+		if (!s || s.is_dashboard || !this.board.hot) return;
 		const holder = this.board.hot.rootElement?.querySelector(".wtHolder");
 		if (holder) s.hot_scroll = { left: holder.scrollLeft, top: holder.scrollTop };
 	}
 
-	/** Snapshot current board columns into the sheet state (non-blank sheets only). */
+	/** Snapshot current board columns into the sheet state (non-blank, non-dashboard sheets only). */
 	_capture_col_config(id) {
 		if (!id) return;
 		const s = this._sheets.get(id);
-		if (!s || s.is_blank || !this.board.columns) return;
+		if (!s || s.is_blank || s.is_dashboard || !this.board.columns) return;
 		const plugin = this.board.hot?.getPlugin("manualColumnResize");
 		s.columns_config = this.board.columns.map((col, i) => {
 			const width = plugin?.columnWidthsMap?.get(i) ?? col.width ?? 140;
@@ -669,6 +586,15 @@ frappe.views.excel.SheetManager = class SheetManager {
 	}
 
 	_apply_sheet(sheet) {
+		// Dashboard sheets — delegate entirely to DashboardManager
+		if (sheet.is_dashboard) {
+			this.board.dashboard_manager?._activate(sheet);
+			this._render_tabs();
+			return;
+		}
+		// Deactivate dashboard if switching away from it
+		this.board.dashboard_manager?._deactivate();
+
 		const board = this.board;
 
 		// Rebuild columns for this sheet's doctype
@@ -696,6 +622,14 @@ frappe.views.excel.SheetManager = class SheetManager {
 			}
 		}, 0);
 
+		// Secondary sheet proactive fill: fetch more pages until container overflows.
+		// Fires on first load AND every tab switch-back (covers both paths).
+		if (sheet.doctype && sheet.doctype !== board.doctype) {
+			if (!sheet._no_more_data && sheet._fetch_fields) {
+				setTimeout(() => board._sec_sheet_fetch?.(sheet), 100);
+			}
+		}
+
 		board.toolbar?.sync?.();
 		board.status_bar?.clear?.();
 		// Show report filter bar if this sheet was loaded from a report
@@ -722,29 +656,114 @@ frappe.views.excel.SheetManager = class SheetManager {
 	}
 
 	_lazy_fetch(sheet) {
-		// Blank sheets have no DocType — just apply immediately with empty data
-		if (sheet.is_blank) {
+		// Dashboard and blank sheets have no DocType — apply immediately
+		if (sheet.is_dashboard || sheet.is_blank) {
 			this._apply_sheet(sheet);
 			return;
 		}
 		const board = this.board;
-		// Temporarily rebuild columns so the grid shows the right headers
+		// Show placeholder columns immediately while meta/data loads
 		board._switch_sheet_context(sheet);
 		board.hot.updateSettings({ columns: board.columns });
 		board.hot.loadData([]);
 
-		// Use frappe.get_list to fetch data for the sheet's doctype.
-		// Exclude formula cols and join-style keys (contain "__") which are
-		// virtual and not valid Frappe fieldnames.
-		const fields = sheet.columns_config
-			? sheet.columns_config
-				.filter((c) => !c.is_formula_col)
+		if (sheet.columns_config) {
+			// Saved column config — restore sheet._columns so _switch_sheet_context uses the full
+			// saved layout (including _meta/_social virtual col defs) without rebuilding from scratch.
+			if (!sheet._columns) sheet._columns = sheet.columns_config;
+
+			const META_FIELDS   = ["owner", "creation", "modified_by", "modified"];
+			const SOCIAL_FIELDS = ["_user_tags", "_comments", "_assign", "_liked_by", "docstatus", "idx"];
+			const has_meta   = sheet.columns_config.some(c => c._is_meta_col  || c.data === "_meta");
+			const has_social = sheet.columns_config.some(c => c._is_social_col || c.data === "_social");
+
+			// Extract only real Frappe fieldnames (skip virtual/formula/join cols)
+			const fields = sheet.columns_config
+				.filter((c) => !c.is_formula_col && !c._is_meta_col && !c._is_social_col)
 				.map((c) => c.fieldname || c.key)
-				.filter((f) => f && !f.includes("__"))
-			: ["name"];
+				.filter((f) => f && !f.startsWith("_") && !f.includes("__"));
+			if (!fields.includes("name")) fields.unshift("name");
+			// Add raw backing fields so renderers can paint meta/social cells
+			if (has_meta)   META_FIELDS.forEach(f => !fields.includes(f) && fields.push(f));
+			if (has_social) SOCIAL_FIELDS.forEach(f => !fields.includes(f) && fields.push(f));
 
-		if (!fields.includes("name")) fields.unshift("name");
+			// Cache submittable flag (meta likely already in frappe cache from previous load)
+			frappe.model.with_doctype(sheet.doctype, () => {
+				sheet._is_submittable = !!frappe.get_meta(sheet.doctype)?.is_submittable;
+			});
+			this._do_fetch_sheet(sheet, fields);
+		} else {
+			// New/restored secondary sheet — need doctype meta to build columns + fetch fields
+			frappe.model.with_doctype(sheet.doctype, () => {
+				const meta = frappe.get_meta(sheet.doctype);
+				// Cache submittable flag per-sheet (used by social column docstatus badge)
+				sheet._is_submittable = !!meta?.is_submittable;
+				const _NON_DATA = new Set(["Section Break", "Column Break", "HTML", "Table", "Tab Break", "Fold", "Heading"]);
+				// Mirror Frappe's Report/List view: show only in_list_view fields; fall back to first 5
+				let show_fields = meta.fields.filter(f => f.in_list_view && !_NON_DATA.has(f.fieldtype));
+				if (!show_fields.length) show_fields = meta.fields.filter(f => !_NON_DATA.has(f.fieldtype)).slice(0, 5);
 
+				// Build sheet._columns if _switch_sheet_context async hasn't finished yet
+				if (!sheet._columns) {
+					sheet._columns = [
+						{ data: "name", title: "ID", type: "text", width: 160, readOnly: true, _readonly: true },
+						...show_fields.map((f) => ({
+							data: f.fieldname,
+							title: f.label || f.fieldname,
+							type: "text",
+							width: 140,
+							readOnly: f.read_only ? true : !board.list_view.can_write,
+							_readonly: !!f.read_only,
+						})),
+					];
+				}
+
+				// Inject _meta virtual column (idempotent)
+				const META_FIELDS = ["owner", "creation", "modified_by", "modified"];
+				if (!sheet._columns.some((c) => c.data === "_meta")) {
+					sheet._columns = sheet._columns.filter((c) => !META_FIELDS.includes(c.data));
+					sheet._columns.splice(1, 0, {
+						data: "_meta", title: "Created / Updated",
+						readOnly: true, _readonly: true, _is_meta_col: true,
+						width: 200, renderer: "text", className: "htDimmed",
+					});
+				}
+
+				// Inject _social virtual column (idempotent)
+				const SOCIAL_FIELDS = ["_user_tags", "_comments", "_assign", "_liked_by", "docstatus", "idx"];
+				if (!sheet._columns.some((c) => c.data === "_social")) {
+					sheet._columns = sheet._columns.filter((c) => !SOCIAL_FIELDS.includes(c.data));
+					sheet._columns.push({
+						data: "_social", title: "Activity",
+						readOnly: true, _readonly: true, _is_social_col: true,
+						width: 180, renderer: "text", className: "htDimmed",
+					});
+				}
+
+				// Update HOT columns if this sheet is still active
+				if (this.get_current()?.id === sheet.id) {
+					board.columns = sheet._columns;
+					board.hot.updateSettings({ columns: board.columns });
+				}
+
+				// Fetch all fields: display fields + raw meta + social (for cell renderers)
+				const fields = [
+					"name",
+					...show_fields.map((f) => f.fieldname),
+					...META_FIELDS,
+					...SOCIAL_FIELDS,
+				];
+				this._do_fetch_sheet(sheet, fields);
+			});
+		}
+	}
+
+	_do_fetch_sheet(sheet, fields) {
+		const board = this.board;
+		const page_size = 20; // Fixed for secondary sheets — list_view.page_length belongs to base sheet
+		// Persist fetch fields so infinite-scroll appends use the same field list
+		sheet._fetch_fields = fields;
+		sheet._no_more_data = false;
 		frappe.call({
 			method: "frappe.client.get_list",
 			args: {
@@ -752,12 +771,16 @@ frappe.views.excel.SheetManager = class SheetManager {
 				fields,
 				filters: sheet.filters || [],
 				order_by: sheet.sort_by ? `${sheet.sort_by.field} ${sheet.sort_by.order}` : "modified desc",
-				limit: 100,
+				limit: page_size,
+				limit_start: 0,
 			},
 			callback: (r) => {
 				const data = r.message || [];
+				if (data.length < page_size) sheet._no_more_data = true;
 				sheet.data = data;
 				this._apply_sheet(sheet);
+				// Re-apply any smart lookups that target this sheet as source
+				board._reapply_smart_lookups?.();
 			},
 		});
 	}
@@ -793,14 +816,106 @@ frappe.views.excel.SheetManager = class SheetManager {
 		sheet._data_is_stale  = false; // recomputed fresh — clear stale flag
 	}
 
+	/**
+	 * Re-run a DuckDB query sheet from its stored AST against live data.
+	 * @param {Object} sheet - SheetState with query_ast set
+	 * @param {boolean} apply_when_done - call _apply_sheet after success (used from switch_to)
+	 */
+	/**
+	 * Pre-warm DuckDB WASM + pre-load tables from IDB cache, then re-run all stale
+	 * query_ast sheets in background.  Separating WASM init from query execution
+	 * means perceived latency when the user clicks a query sheet is near-zero.
+	 */
+	async _prewarm_and_rerun_ast_sheets() {
+		const engine = frappe.views?.excel?.duckdb_v2;
+		if (!engine) return;
+		const ast_sheets = [...this._sheets.values()].filter(s => s.query_ast && s._data_is_stale);
+		if (!ast_sheets.length) return;
+
+		// Step 1 — init WASM (idempotent — returns existing promise if already started)
+		try { await engine._init(); } catch (_) { return; }
+
+		// Step 2 — pre-load source tables from IDB in parallel (before query runs)
+		const pre_fetch = [];
+		const seen_doctypes = new Set();
+		for (const s of ast_sheets) {
+			try {
+				const plain = JSON.parse(s.query_ast);
+				const doctypes = [plain.source?.doctype, ...(plain.joins || []).map(j => j.tgt_doctype)]
+					.filter(Boolean);
+				for (const dt of doctypes) {
+					if (!seen_doctypes.has(dt) && !engine._loaded_tables.has(dt)) {
+						seen_doctypes.add(dt);
+						pre_fetch.push(engine.bulk_fetch(dt).catch(() => {}));
+					}
+				}
+			} catch (_) {}
+		}
+		if (pre_fetch.length) await Promise.all(pre_fetch);
+
+		// Step 3 — run queries (tables already loaded → only SQL execution cost)
+		for (const s of ast_sheets) {
+			this._rerun_query_ast_sheet(s);
+		}
+	}
+
+	async _rerun_query_ast_sheet(sheet, apply_when_done = false) {
+		// Upgrade to apply if caller wants it even when a run is already in progress
+		if (apply_when_done) sheet._apply_on_done = true;
+		if (sheet._rerun_in_progress) return;
+		sheet._rerun_in_progress = true;
+
+		const engine = frappe.views.excel?.duckdb_v2;
+		if (!engine) { sheet._rerun_in_progress = false; return; }
+
+		try {
+			// Reconstruct a proper QueryAST instance so class methods are available
+			// to SQLGenerator (plain JSON objects lack prototype methods).
+			const { QueryAST } = frappe.views.excel;
+			const plain = JSON.parse(sheet.query_ast);
+			const ast = (QueryAST && typeof QueryAST === "function")
+				? Object.assign(new QueryAST(), plain)
+				: plain;
+
+			// First-page load: cap at 100 rows; more loaded on scroll via _query_sheet_fetch
+			ast.offset = 0;
+			ast.limit  = 100;
+
+			const { headers, rows } = await engine.run_ast(ast);
+
+			sheet.columns_config = headers.map(h => ({
+				data: h, title: h, type: "text",
+				width: Math.min(200, Math.max(80, h.length * 9)),
+			}));
+			sheet.data = rows.map(r => {
+				const obj = {};
+				headers.forEach((h, i) => { obj[h] = r[i] ?? ""; });
+				return obj;
+			});
+			sheet._data_is_stale  = false;
+			sheet._no_more_data   = rows.length < 100;  // fewer than page size → exhausted
+
+			if (sheet._apply_on_done || this._active_id === sheet.id) {
+				sheet._apply_on_done = false;
+				this._apply_sheet(sheet);
+			}
+		} catch (e) {
+			console.error(`[ExcelView] query_ast re-run failed for "${sheet.label}":`, e);
+		} finally {
+			sheet._rerun_in_progress = false;
+		}
+	}
+
 	// ── State helpers ─────────────────────────────────────────────────────
 
-	_make_state({ doctype, label, id, is_blank }) {
+	_make_state({ doctype, label, id, is_blank, is_dashboard }) {
 		return {
 			id: id || `ev_sheet_${++this._uid}_${Date.now()}`,
 			label: label || doctype || __("Sheet"),
 			doctype,
 			is_blank: !!is_blank,
+			is_dashboard: !!is_dashboard,
+			dashboard_widgets: [],
 			hf_sheet_id: 0,
 			data: null,
 			hot_scroll: { left: 0, top: 0 },

@@ -92,6 +92,8 @@ frappe.views.excel.FormulaBar = class FormulaBar {
 
 		// fx button click → formula help popup
 		$(this.wrapper).find(".ev-fx-help").on("click", () => this._show_formula_help());
+
+		// No realtime listener needed — configs are fetched fresh on every popup open.
 	}
 
 	// ── Public API ────────────────────────────────────────────────────────────
@@ -202,90 +204,245 @@ frappe.views.excel.FormulaBar = class FormulaBar {
 
 	/**
 	 * Show/hide the formula help popup.
-	 * First call creates the popup; subsequent calls toggle visibility.
+	 *
+	 * Performance contract:
+	 *   • Open  → instant (renders from frappe.boot cache, zero network wait).
+	 *   • Background fetch updates ONLY the "My Formulas" section if configs
+	 *     changed — the rest of the popup is never rebuilt.
+	 *   • Close → instant toggle, no network call.
 	 */
 	_show_formula_help() {
-		if (this._$help_popup) {
-			this._$help_popup.toggleClass("hide");
+		// ── Close path (instant) ──────────────────────────────────────────────
+		if (this._$help_popup && !this._$help_popup.hasClass("hide")) {
+			this._$help_popup.addClass("hide");
 			return;
 		}
 
-		const sections = [
+		// ── Open path (instant from cache) ───────────────────────────────────
+		if (!this._$help_popup) {
+			this._build_formula_help_popup();
+		} else {
+			this._$help_popup.removeClass("hide");
+		}
+
+		// ── Background refresh — update only "My Formulas" if changed ─────────
+		// Runs after the popup is already visible, so the user sees no delay.
+		frappe.call({
+			method: "excel_view.api.get_formula_configs",
+			callback: (r) => {
+				if (r.exc) return;
+				const fresh = r.message || [];
+				const cached_json = JSON.stringify(frappe.boot.excel_formula_configs || []);
+				const fresh_json  = JSON.stringify(fresh);
+				if (fresh_json === cached_json) return; // nothing changed
+				frappe.boot.excel_formula_configs = fresh;
+				this._refresh_dyn_section(fresh);
+			},
+		});
+	}
+
+	/**
+	 * Replace only the "★ My Formulas" section inside the already-open popup.
+	 * All other sections (Math, Logic, ERP …) are untouched.
+	 * @param {Array} configs - fresh excel_formula_configs array
+	 */
+	_refresh_dyn_section(configs) {
+		if (!this._$help_popup) return;
+		const $erp_grid = this._$help_popup.find(".ev-fh-grid--erp");
+		$erp_grid.find(".ev-fh-section--dyn").remove();
+		if (!configs.length) return;
+
+		const dyn_html = this._build_dyn_html(configs);
+		$erp_grid.append(dyn_html);
+
+		// Bind click handler for the newly added rows
+		$erp_grid.find(".ev-fh-section--dyn .ev-fh-row").on("click", (e) => {
+			const formula = $(e.currentTarget).data("formula");
+			this.$formula.val(formula).focus();
+			this._$help_popup.addClass("hide");
+		});
+	}
+
+	/**
+	 * Build the HTML string for the "★ My Formulas" section.
+	 * Extracted so both initial render and _refresh_dyn_section use identical markup.
+	 * @param {Array} configs
+	 * @returns {string}
+	 */
+	_build_dyn_html(configs) {
+		const _row = ({ formula, label, desc, tooltip }) => {
+			const tip = frappe.utils.escape_html(tooltip || desc || "");
+			return `<div class="ev-fh-row ev-fh-row--dyn"
+					data-formula="${frappe.utils.escape_html(formula)}" title="${tip}">
+				<code class="ev-fh-formula">${frappe.utils.escape_html(formula)}</code>
+				<span class="ev-fh-desc">${frappe.utils.escape_html(label || desc)}</span>
+			</div>`;
+		};
+		const rows = configs.map((c) => _row({
+			formula: `=${c.formula_name}()`,
+			label:   c.label || c.formula_name,
+			desc:    c.description || `${c.formula_type} on ${c.source_doctype}`,
+			tooltip: c.description || "",
+		})).join("");
+		return `
+			<div class="ev-fh-section ev-fh-section--dyn">
+				<div class="ev-fh-category">★ ${__("My Formulas")}</div>
+				<div class="ev-fh-rows">${rows}</div>
+			</div>`;
+	}
+
+	/** Build and append the formula help popup using frappe.boot.excel_formula_configs. */
+	_build_formula_help_popup() {
+
+		// ── Standard HyperFormula sections ────────────────────────────────────
+		const std_sections = [
 			{
-				category: __("Math & Stats"),
-				icon: "Σ",
+				category: __("Math & Stats"), icon: "Σ",
 				items: [
-					{ formula: "=SUM(B2:B10)", desc: __("Sum of a range") },
-					{ formula: "=AVERAGE(C2:C5)", desc: __("Average of values") },
-					{ formula: "=MAX(D2:D10)", desc: __("Maximum value") },
-					{ formula: "=MIN(D2:D10)", desc: __("Minimum value") },
-					{ formula: "=COUNT(B2:B10)", desc: __("Count numeric cells") },
-					{ formula: "=ROUND(A1, 2)", desc: __("Round to 2 decimals") },
-					{ formula: "=ABS(A1)", desc: __("Absolute value") },
+					{ formula: "=SUM(B2:B10)",     desc: __("Sum of a range") },
+					{ formula: "=AVERAGE(C2:C5)",  desc: __("Average of values") },
+					{ formula: "=MAX(D2:D10)",      desc: __("Maximum value") },
+					{ formula: "=MIN(D2:D10)",      desc: __("Minimum value") },
+					{ formula: "=COUNT(B2:B10)",    desc: __("Count numeric cells") },
+					{ formula: "=ROUND(A1, 2)",     desc: __("Round to 2 decimals") },
+					{ formula: "=ABS(A1)",          desc: __("Absolute value") },
 				],
 			},
 			{
-				category: __("Logic"),
-				icon: "⎇",
+				category: __("Logic"), icon: "⎇",
 				items: [
 					{ formula: '=IF(A1>100,"High","Low")', desc: __("Conditional value") },
-					{ formula: "=AND(A1>0, B1>0)", desc: __("Both conditions true") },
-					{ formula: "=OR(A1>0, B1>0)", desc: __("Either condition true") },
-					{ formula: "=IFERROR(A1/B1, 0)", desc: __("Handle errors gracefully") },
-					{ formula: "=NOT(A1)", desc: __("Logical NOT") },
+					{ formula: "=AND(A1>0, B1>0)",         desc: __("Both conditions true") },
+					{ formula: "=OR(A1>0, B1>0)",          desc: __("Either condition true") },
+					{ formula: "=IFERROR(A1/B1, 0)",       desc: __("Handle errors gracefully") },
+					{ formula: "=NOT(A1)",                  desc: __("Logical NOT") },
 				],
 			},
 			{
-				category: __("Text"),
-				icon: "T",
+				category: __("Text"), icon: "T",
 				items: [
 					{ formula: '=CONCATENATE(A1," ",B1)', desc: __("Join text together") },
-					{ formula: "=LEN(A1)", desc: __("Length of text") },
-					{ formula: "=UPPER(A1)", desc: __("Convert to uppercase") },
-					{ formula: "=LOWER(A1)", desc: __("Convert to lowercase") },
-					{ formula: "=TRIM(A1)", desc: __("Remove extra spaces") },
-					{ formula: "=LEFT(A1, 5)", desc: __("First 5 characters") },
+					{ formula: "=LEN(A1)",                desc: __("Length of text") },
+					{ formula: "=UPPER(A1)",              desc: __("Convert to uppercase") },
+					{ formula: "=LOWER(A1)",              desc: __("Convert to lowercase") },
+					{ formula: "=TRIM(A1)",               desc: __("Remove extra spaces") },
+					{ formula: "=LEFT(A1, 5)",            desc: __("First 5 characters") },
 				],
 			},
 			{
-				category: __("Date & Time"),
-				icon: "📅",
+				category: __("Date & Time"), icon: "📅",
 				items: [
-					{ formula: "=TODAY()", desc: __("Today's date") },
-					{ formula: "=NOW()", desc: __("Current date and time") },
-					{ formula: "=YEAR(A1)", desc: __("Extract year") },
-					{ formula: "=MONTH(A1)", desc: __("Extract month") },
-					{ formula: "=DAY(A1)", desc: __("Extract day") },
+					{ formula: "=TODAY()",          desc: __("Today's date") },
+					{ formula: "=NOW()",            desc: __("Current date and time") },
+					{ formula: "=YEAR(A1)",         desc: __("Extract year") },
+					{ formula: "=MONTH(A1)",        desc: __("Extract month") },
+					{ formula: "=DAY(A1)",          desc: __("Extract day") },
 					{ formula: '=DATEDIF(A1,B1,"D")', desc: __("Days between two dates") },
 				],
 			},
 		];
 
-		const grid_html = sections.map(({ category, icon, items }) => `
-			<div class="ev-fh-section">
+		// ── Built-in Frappe ERP formulas ──────────────────────────────────────
+		const erp_items = [
+			{
+				formula: "=FRAPPE_GET(doctype, name, fieldname)",
+				desc: __("Fetch any field — plain, link-hop, or child row"),
+				tooltip: __(
+					"Plain: =FRAPPE_GET(\"Customer\",A2,\"credit_limit\") | " +
+					"Link hop: =FRAPPE_GET(\"Sales Person\",A2,\"employee.ctc\") | " +
+					"Child row: =FRAPPE_GET(\"Sales Invoice\",A2,\"items[1].amount\")"
+				),
+			},
+			{
+				formula: "=FRAPPE_CHILD_GET(doctype, name, child_field, row, fieldname)",
+				desc: __("Fetch a field from a specific child table row"),
+				tooltip: __("Example: =FRAPPE_CHILD_GET(\"Sales Invoice\", A2, \"items\", 1, \"amount\") — row index is 1-based"),
+			},
+			{
+				formula: "=FRAPPE_SUM(doctype, fieldname, fk1, fv1, ...)",
+				desc: __("Sum a field across DocType records with filters"),
+				tooltip: __("Example: =FRAPPE_SUM(\"Sales Invoice\", \"grand_total\", \"docstatus\", 1)"),
+			},
+			{
+				formula: "=FRAPPE_COUNT(doctype, fk1, fv1, ...)",
+				desc: __("Count records in a DocType with filters"),
+				tooltip: __("Example: =FRAPPE_COUNT(\"Employee\", \"status\", \"Active\")"),
+			},
+			{
+				formula: "=FRAPPE_AVG(doctype, fieldname, fk1, fv1, ...)",
+				desc: __("Average a field across DocType records"),
+				tooltip: __("Example: =FRAPPE_AVG(\"Sales Invoice\", \"grand_total\", \"docstatus\", 1)"),
+			},
+			{
+				formula: "=GL_BALANCE(account, company, from_date, to_date)",
+				desc: __("Live General Ledger balance for any account"),
+				tooltip: __("Example: =GL_BALANCE(\"Debtors - TC\", \"Test Company\")"),
+			},
+			{
+				formula: "=STOCK_QTY(item_code, warehouse, as_of_date)",
+				desc: __("Live stock quantity from Bin"),
+				tooltip: __("Example: =STOCK_QTY(\"Laptop\", \"Main Warehouse\")"),
+			},
+			{
+				formula: "=ITEM_PRICE(item_code, price_list, qty, customer)",
+				desc: __("Fetch item price from a Price List"),
+				tooltip: __("Example: =ITEM_PRICE(\"Laptop\", \"Standard Selling\")"),
+			},
+			{
+				formula: "=SMART_LOOKUP(value, target_doctype, return_field)",
+				desc: __("Cross-DocType lookup — no manual range needed"),
+				tooltip: __("Example: =SMART_LOOKUP(A2, \"Customer\", \"customer_group\")"),
+			},
+			{
+				formula: "=PERIOD_START()",
+				desc: __("Start date of the active toolbar period"),
+				tooltip: __("Changes with the period picker. Use in date filter args."),
+			},
+			{
+				formula: "=PERIOD_END()",
+				desc: __("End date of the active toolbar period"),
+				tooltip: __("Changes with the period picker. Use in date filter args."),
+			},
+		];
+
+		// ── Render helpers (std + ERP sections only) ──────────────────────────
+		const _row = ({ formula, desc, tooltip, is_erp, label }) => {
+			const tip = frappe.utils.escape_html(tooltip || desc || "");
+			return `<div class="ev-fh-row${is_erp ? " ev-fh-row--erp" : ""}"
+					data-formula="${frappe.utils.escape_html(formula)}" title="${tip}">
+				<code class="ev-fh-formula">${frappe.utils.escape_html(formula)}</code>
+				<span class="ev-fh-desc">${frappe.utils.escape_html(label || desc)}</span>
+			</div>`;
+		};
+
+		const _section = ({ category, icon, items, accent }) => `
+			<div class="ev-fh-section${accent ? ` ev-fh-section--${accent}` : ""}">
 				<div class="ev-fh-category">${icon} ${category}</div>
-				<div class="ev-fh-rows">
-					${items.map(({ formula, desc }) => `
-						<div class="ev-fh-row" title="${__("Click to insert")}">
-							<code class="ev-fh-formula">${frappe.utils.escape_html(formula)}</code>
-							<span class="ev-fh-desc">${desc}</span>
-						</div>
-					`).join("")}
-				</div>
-			</div>
-		`).join("");
+				<div class="ev-fh-rows">${items.map(_row).join("")}</div>
+			</div>`;
+
+		const std_html = std_sections.map((s) => _section(s)).join("");
+		const erp_html = _section({
+			category: __("Frappe ERP"),
+			icon: "⚡",
+			accent: "erp",
+			items: erp_items.map((i) => ({ ...i, is_erp: true })),
+		});
+
+		// "My Formulas" rendered via shared helper (same markup used by _refresh_dyn_section)
+		const dyn_html = this._build_dyn_html(frappe.boot?.excel_formula_configs || []);
 
 		this._$help_popup = $(`
 			<div class="ev-formula-help-popup">
 				<div class="ev-fh-header">
-					<span class="ev-fh-title">📊 ${__("Formula Examples")}</span>
+					<span class="ev-fh-title">📊 ${__("Formula Library")}</span>
+					<input class="ev-fh-search" type="text" placeholder="${__("Search formulas…")}" />
 					<button class="ev-fh-close" title="${__("Close")}">×</button>
 				</div>
 				<div class="ev-fh-body">
-					<div class="ev-fh-grid">${grid_html}</div>
-					<div class="ev-fh-tip">
-						↑ ${__("Click any formula to insert it. Use A1, B2 notation for cell references.")}
-					</div>
+					<div class="ev-fh-grid ev-fh-grid--std">${std_html}</div>
+					<div class="ev-fh-grid ev-fh-grid--erp">${erp_html}${dyn_html}</div>
+					<div class="ev-fh-tip">↑ ${__("Click any formula to insert. Hover for description.")}</div>
 				</div>
 			</div>
 		`).appendTo(this.wrapper);
@@ -294,11 +451,26 @@ frappe.views.excel.FormulaBar = class FormulaBar {
 			this._$help_popup.addClass("hide");
 		});
 
-		// Click a formula row → insert formula into formula bar input
-		this._$help_popup.find(".ev-fh-row").on("click", (e) => {
-			const formula = $(e.currentTarget).find(".ev-fh-formula").text();
+		// Click a formula row → insert into formula bar.
+		// Delegated on the popup root so dynamically refreshed dyn rows are covered.
+		this._$help_popup.on("click", ".ev-fh-row", (e) => {
+			const formula = $(e.currentTarget).attr("data-formula");
 			this.$formula.val(formula).focus();
 			this._$help_popup.addClass("hide");
+		});
+
+		// Search filter — hide non-matching rows live
+		this._$help_popup.find(".ev-fh-search").on("input", (e) => {
+			const q = e.target.value.toLowerCase();
+			this._$help_popup.find(".ev-fh-row").each((_, el) => {
+				const text = ($(el).text() + $(el).attr("title")).toLowerCase();
+				$(el).toggleClass("hide", !!q && !text.includes(q));
+			});
+			// Hide section headers with no visible rows
+			this._$help_popup.find(".ev-fh-section").each((_, sec) => {
+				const visible = $(sec).find(".ev-fh-row:not(.hide)").length;
+				$(sec).toggleClass("hide", !visible);
+			});
 		});
 
 		// Close on outside click

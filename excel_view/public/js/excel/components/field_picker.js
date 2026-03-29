@@ -73,11 +73,20 @@ frappe.views.excel.FieldPicker = class FieldPicker {
 		const can_read = (df) => readable_permlevels.has(df.permlevel || 0);
 
 		// ── Currently visible column keys (to pre-check them) ───────────────
+		// Virtual columns (_meta, _social) absorb real fields — expand them back
+		// so those real fields show as checked in the picker.
+		const _META_REAL   = new Set(["owner", "creation", "modified_by", "modified"]);
+		const _SOCIAL_REAL = new Set(["_user_tags", "_comments", "_assign", "_liked_by"]);
+		const _has_meta    = this.board.columns.some(c => c.data === "_meta");
+		const _has_social  = this.board.columns.some(c => c.data === "_social");
+
 		const visible_keys = new Set(
 			this.board.columns
 				.filter(c => !c._is_formula_col && !c._is_name_col)
 				.map(c => c.data)
 		);
+		if (_has_meta)   _META_REAL.forEach(f => visible_keys.add(f));
+		if (_has_social) _SOCIAL_REAL.forEach(f => visible_keys.add(f));
 
 		// ── "name" / ID — always first, always checked, not draggable ───────
 		this._fields = [{

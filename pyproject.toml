@@ -9,18 +9,24 @@ readme = "README.md"
 dynamic = ["version"]
 dependencies = [
     # "frappe~=15.0.0" # Installed and managed by bench.
-    "networkx>=3.0",
-    "mlxtend>=0.23",
-    "scikit-learn>=1.3",
-    "scipy>=1.11",
-    "numpy>=1.24",
-    "pandas>=2.0",
-    "RapidFuzz>=3.0",
-    "spacy>=3.7",
-    # Note: spaCy model (en_core_web_sm) is specified in requirements.txt as direct URL
-    # This auto-installs during bench build/deployment without manual download
-    "sentence-transformers>=2.2",
-    "pdfplumber>=0.10",
+
+    # ── V2 IntelliFlow / GenBI ─────────────────────────────────────────────────
+    "networkx>=3.0",          # Schema graph traversal + join path discovery
+    "mlxtend>=0.23",          # Association rule mining for Pattern Mining
+    "scikit-learn>=1.3",      # TF-IDF similarity for GenBI column matching
+    "scipy>=1.11",            # Numerical routines (scikit dependency)
+    "numpy>=1.24",            # Array ops (scikit / pandas dependency)
+    "pandas>=2.0",            # Data frame ops for analysis pipeline
+    "RapidFuzz>=3.0",         # Fuzzy column name matching (Smart Lookup Layer 2)
+    "spacy>=3.7",             # NER for PROMPT() formula (V3.5 roadmap)
+    # Note: spaCy model (en_core_web_sm) is in requirements.txt as direct URL
+    "sentence-transformers>=2.2",  # Semantic embeddings for GenBI join suggestions
+    "pdfplumber>=0.10",       # PDF export parsing (V2.5+)
+
+    # ── V3 IntelliFlow — no new Python packages ────────────────────────────────
+    # V3 is entirely client-side JS. New endpoints (bulk_fetch_for_duckdb,
+    # get_doctype_schema) use core Frappe ORM only — no extra Python deps.
+    # New JS packages (dagre, sql-formatter, comlink) are in package.json.
 ]
 
 [build-system]

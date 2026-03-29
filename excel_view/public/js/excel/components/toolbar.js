@@ -261,6 +261,21 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 							</button>
 						`)}
 
+						${this._grp(__("Dashboard"), `
+							<button class="ev-tb-btn ev-tb-btn--lg ev-dash-numcard-btn" title="${__("Add Number Card to dashboard")}">
+								<span class="ev-tb-icon">🔢</span>
+								<span class="ev-btn-label">${__("Number Card")}</span>
+							</button>
+							<button class="ev-tb-btn ev-tb-btn--lg ev-dash-chart-btn" title="${__("Add Chart to dashboard")}">
+								<span class="ev-tb-icon">📊</span>
+								<span class="ev-btn-label">${__("Chart")}</span>
+							</button>
+							<button class="ev-tb-btn ev-tb-btn--lg ev-dash-date-btn" title="${__("Add Date Filter to dashboard")}">
+								<span class="ev-tb-icon">📅</span>
+								<span class="ev-btn-label">${__("Date Filter")}</span>
+							</button>
+						`)}
+
 					</div><!-- /insert pane -->
 
 					<!-- FORMULAS TAB ─────────────────────────────────────────── -->
@@ -319,7 +334,7 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 						`)}
 
 						${this._grp(__("Records"), `
-							<button class="ev-tb-btn ev-tb-btn--lg ev-duplicate-record-btn" title="${__("Duplicate selected row as new record")}">
+							<button class="ev-tb-btn ev-tb-btn--lg ev-duplicate-record-btn" title="${__("Duplicate selected row(s) as new record(s)")}">
 								<svg class="ev-btn-icon" width="20" height="20" viewBox="0 0 14 14" fill="currentColor"><rect x="1" y="4" width="7" height="9" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/><rect x="4" y="1" width="7" height="9" rx="1" fill="none" stroke="currentColor" stroke-width="1.3"/><line x1="7" y1="4" x2="7" y2="9" stroke="currentColor" stroke-width="1.3"/><line x1="4.5" y1="6.5" x2="9.5" y2="6.5" stroke="currentColor" stroke-width="1.3"/></svg>
 								<span class="ev-btn-label">${__("Duplicate")}</span>
 							</button>
@@ -330,6 +345,14 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 							<button class="ev-tb-btn ev-tb-btn--lg ev-delete-records-btn" title="${__("Delete Selected Records")}">
 								<svg class="ev-btn-icon" width="20" height="20" viewBox="0 0 14 14" fill="none" stroke="#c62828" stroke-width="1.3" stroke-linejoin="round"><path d="M2 4h10l-1 8H3L2 4zm4 2v5m2-5v5M5 2h4l1 2H4z"/></svg>
 								<span class="ev-btn-label" style="color:#c62828">${__("Delete")}</span>
+							</button>
+							<button class="ev-tb-btn ev-tb-btn--lg ev-bulk-add-btn" title="${__("Add multiple blank rows and create records in bulk — paste from Excel/Sheets")}">
+								<svg class="ev-btn-icon" width="20" height="20" viewBox="0 0 16 16" fill="currentColor"><path d="M8 2a.5.5 0 0 1 .5.5v5h5a.5.5 0 0 1 0 1h-5v5a.5.5 0 0 1-1 0v-5h-5a.5.5 0 0 1 0-1h5v-5A.5.5 0 0 1 8 2z"/></svg>
+								<span class="ev-btn-label">${__("Bulk Add")}</span>
+							</button>
+							<button class="ev-tb-btn ev-tb-btn--lg ev-bulk-import-btn" title="${__("Import rows from CSV, Report or any Get Data source into this DocType")}">
+								<svg class="ev-btn-icon" width="20" height="20" viewBox="0 0 16 16" fill="currentColor"><path d="M.5 9.9a.5.5 0 0 1 .5.5v2.5a1 1 0 0 0 1 1h12a1 1 0 0 0 1-1v-2.5a.5.5 0 0 1 1 0v2.5a2 2 0 0 1-2 2H2a2 2 0 0 1-2-2v-2.5a.5.5 0 0 1 .5-.5z"/><path d="M7.646 1.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1-.708.708L8.5 2.707V11.5a.5.5 0 0 1-1 0V2.707L5.354 4.854a.5.5 0 1 0-.708-.708l3-3z"/></svg>
+								<span class="ev-btn-label">${__("Bulk Import")}</span>
 							</button>
 						`)}
 
@@ -741,6 +764,24 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 			this.board.pivot_builder?.open_dialog();
 		});
 
+		// ── Insert tab: Dashboard widgets ──────────────────────────────────
+		const _check_dashboard = () => {
+			if (!this.board.sheet_manager?.get_current()?.is_dashboard) {
+				frappe.show_alert({ message: __("Switch to a Dashboard sheet first"), indicator: "orange" }, 3);
+				return false;
+			}
+			return true;
+		};
+		$w.on("click", ".ev-dash-numcard-btn", () => {
+			if (_check_dashboard()) this.board.dashboard_manager?._open_widget_modal("number_card");
+		});
+		$w.on("click", ".ev-dash-chart-btn", () => {
+			if (_check_dashboard()) this.board.dashboard_manager?._open_widget_modal("chart");
+		});
+		$w.on("click", ".ev-dash-date-btn", () => {
+			if (_check_dashboard()) this.board.dashboard_manager?._open_widget_modal("date_filter");
+		});
+
 		// ── Formulas tab: AutoSum ───────────────────────────────────────────
 		$w.on("click", ".ev-autosum-btn", () => this._insert_autosum());
 
@@ -817,6 +858,32 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		$w.on("click", ".ev-duplicate-record-btn", () => this._duplicate_record());
 		$w.on("click", ".ev-insert-record-btn",    () => this._insert_record_dialog());
 		$w.on("click", ".ev-delete-records-btn",   () => this._delete_selected());
+
+		// Bulk Add — prompt for row count then enter bulk-add mode
+		$w.on("click", ".ev-bulk-add-btn", () => {
+			if (this.board._bulk_add_start >= 0) {
+				// Already in bulk mode — ask if they want to cancel
+				frappe.confirm(
+					__("Bulk Add is already active. Cancel it and start fresh?"),
+					() => {
+						this.board._exit_bulk_add_mode();
+						this._prompt_bulk_add();
+					}
+				);
+			} else {
+				this._prompt_bulk_add();
+			}
+		});
+
+		// Bulk Import — open Get Data in import mode → Column Mapper → bulk-add with data
+		$w.on("click", ".ev-bulk-import-btn", () => {
+			if (!this.board.list_view?.can_write) {
+				frappe.show_alert({ message: __("You don't have write permission"), indicator: "red" }, 3);
+				return;
+			}
+			this._gd_import_mode = true;
+			this._gd_open();
+		});
 
 		// ── View tab: Freeze Panes (portal popup — escapes ribbon overflow/backdrop-filter) ──
 		$w.on("click", ".ev-freeze-trigger", (e) => {
@@ -1308,38 +1375,68 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		this.board.list_view.refresh();
 	}
 
+	/** Prompt user for row count, then enter bulk-add mode on the board. */
+	_prompt_bulk_add() {
+		frappe.prompt(
+			{
+				fieldtype: "Int",
+				fieldname: "n",
+				label:     __("How many blank rows?"),
+				default:   10,
+				description: __("Fill them in, or paste directly from Excel/Google Sheets (Ctrl+V). Then click Create Records."),
+			},
+			({ n }) => {
+				const count = Math.min(Math.max(parseInt(n) || 10, 1), 500);
+				this.board._enter_bulk_add_mode(count);
+			},
+			__("Bulk Add Rows"),
+			__("Add Rows"),
+		);
+	}
+
 	// ── Duplicate / Smart Insert ─────────────────────────────────────────────
 
 	/**
-	 * Duplicate the selected row as a new record.
-	 * Copies all user-editable field values from the source row,
-	 * strips system fields, then opens the smart insert dialog pre-filled.
+	 * Duplicate selected row(s) as new record(s).
+	 * - Single row → inline insert dialog pre-filled (existing UX).
+	 * - Multiple rows → bulk-duplicate mode (editable grid rows, then Create).
 	 */
 	async _duplicate_record() {
 		if (!this.board.list_view?.can_write) {
 			frappe.show_alert({ message: __("You don't have write permission"), indicator: "red" }, 3);
 			return;
 		}
-		const sel = this.board.hot?.getSelectedLast();
-		if (!sel) {
-			frappe.show_alert({ message: __("Select a row to duplicate"), indicator: "orange" }, 3);
+
+		const selections = this.board.hot?.getSelected() || [];
+		if (!selections.length) {
+			frappe.show_alert({ message: __("Select row(s) to duplicate"), indicator: "orange" }, 3);
 			return;
 		}
-		const row_idx = Math.min(sel[0], sel[2]);
-		const row_data = this.board.list_view.data?.[row_idx];
-		if (!row_data || row_data._is_new) return;
 
-		// Strip system/readonly fields — keep only user-editable values
-		const SYSTEM = new Set(["name","creation","modified","modified_by","owner",
-			"docstatus","idx","_user_tags","_comments","_assign","_liked_by","_seen",
-			"amended_from","naming_series"]);
-		const prefill = {};
-		for (const [k, v] of Object.entries(row_data)) {
-			if (!SYSTEM.has(k) && !k.startsWith("_") && v != null && v !== "") {
-				prefill[k] = v;
-			}
+		// Collect unique row indices from all selection ranges
+		const row_set = new Set();
+		for (const [r1, , r2] of selections) {
+			const from = Math.min(r1, r2), to = Math.max(r1, r2);
+			for (let r = from; r <= to; r++) row_set.add(r);
 		}
-		this.board._start_inline_insert(prefill, /* is_duplicate */ true);
+		const row_indices = [...row_set].sort((a, b) => a - b);
+
+		if (row_indices.length === 1) {
+			// Single row — existing inline insert dialog
+			const row_data = this.board.list_view.data?.[row_indices[0]];
+			if (!row_data || row_data._is_new) return;
+			const SYSTEM = new Set(["name","creation","modified","modified_by","owner",
+				"docstatus","idx","_user_tags","_comments","_assign","_liked_by","_seen",
+				"amended_from","naming_series"]);
+			const prefill = {};
+			for (const [k, v] of Object.entries(row_data)) {
+				if (!SYSTEM.has(k) && !k.startsWith("_") && v != null && v !== "") prefill[k] = v;
+			}
+			this.board._start_inline_insert(prefill, /* is_duplicate */ true);
+		} else {
+			// Multiple rows — bulk duplicate mode
+			this.board._bulk_duplicate(row_indices);
+		}
 	}
 
 	/**
@@ -1526,7 +1623,9 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		}
 
 		const sm = this.board.sheet_manager;
-		const sheets = (sm.get_all() || []).filter(s => s.columns_config?.length > 0);
+		const sheets = (sm.get_all() || []).filter(s =>
+			(s.columns_config?.length > 0 || s._columns?.length > 0) && !s.is_dashboard && !s.is_blank
+		);
 
 		const $panel = this._build_slk_panel(sheets);
 		this._open_right_sidebar("smart_lookup", $panel);
@@ -1796,11 +1895,7 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 						tgt_field: suggestion.target_col,
 						label: suggestion.source_col,
 					};
-					if (src.doctype && tgt.doctype) {
-						this.board.sheet_manager._apply_lookup(src.doctype, tgt.doctype, candidate, return_fields, tgt.id);
-					} else {
-						this._apply_client_side_lookup(src, tgt, candidate, return_fields);
-					}
+					this._apply_client_side_lookup(src, tgt, candidate, return_fields);
 				});
 
 				$results.show();
@@ -1915,18 +2010,7 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 				}
 				const return_fields = checked.map(el => ({ fieldname: el.dataset.fieldname, label: el.dataset.label }));
 				d.hide();
-				// If either side is not a real DocType sheet, use client-side join
-				if (!src_sheet.doctype || !tgt_sheet.doctype) {
-					this._apply_client_side_lookup(src_sheet, tgt_sheet, candidate, return_fields);
-					return;
-				}
-				this.board.sheet_manager._apply_lookup(
-					src_sheet.doctype,
-					tgt_sheet.doctype,
-					candidate,
-					return_fields,
-					tgt_sheet.id
-				);
+				this._apply_client_side_lookup(src_sheet, tgt_sheet, candidate, return_fields);
 			},
 		});
 		d.show();
@@ -1946,45 +2030,65 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 			const key = String(row[candidate.tgt_field] ?? "").trim().toLowerCase();
 			if (key) tgt_map.set(key, row);
 		});
-		// Build value cache so lookup data survives page refresh
-		const value_cache = {};
-		tgt_data.forEach(row => {
-			const key = String(row[candidate.tgt_field] ?? "").trim().toLowerCase();
-			if (!key) return;
-			const cached = {};
-			return_fields.forEach(f => { cached[f.fieldname] = row[f.fieldname] ?? ""; });
-			value_cache[key] = cached;
-		});
-		_sheet_data(src_sheet).forEach(row => {
-			const key = String(row[candidate.src_field] ?? "").trim().toLowerCase();
-			const tgt_row = tgt_map.get(key);
-			return_fields.forEach(f => {
-				row[`_slk_${f.fieldname}`] = tgt_row ? (tgt_row[f.fieldname] ?? "") : "";
-			});
-		});
+
+		const board = this.board;
 		const new_cols = return_fields.map(f => ({
 			data: `_slk_${f.fieldname}`,
 			title: `${f.label} [${tgt_sheet.label}]`,
 			readOnly: true,
 			_is_lookup_col: true,
 		}));
-		src_sheet.columns_config = [...(src_sheet.columns_config || []), ...new_cols];
 
-		const board = this.board;
-		const is_base = src_sheet.id === sm._get_sheet0_id();
-		if (is_base) {
-			// Base DocType sheet: _switch_sheet_context uses _master_columns not columns_config.
-			// Inject directly into the board column arrays.
-			const existing_keys = new Set(board._master_columns.map(c => c.data));
-			const truly_new = new_cols.filter(c => !existing_keys.has(c.data));
-			if (truly_new.length) {
-				board._master_columns.push(...truly_new);
-				board.columns = board._master_columns.filter(c => !board._hidden_col_keys.has(c.data));
-				board.hot?.updateSettings({ columns: board.columns });
-				board.hot?.render();
+		const _do_join = () => {
+			_sheet_data(src_sheet).forEach(row => {
+				const key    = String(row[candidate.src_field] ?? "").trim().toLowerCase();
+				const tgt_row = tgt_map.get(key);
+				return_fields.forEach(f => {
+					row[`_slk_${f.fieldname}`] = tgt_row ? (tgt_row[f.fieldname] ?? "") : "";
+				});
+			});
+
+			// Persist new col defs onto the sheet
+			src_sheet.columns_config = [...(src_sheet.columns_config || []), ...new_cols];
+
+			const is_base = src_sheet.id === sm._get_sheet0_id();
+			if (is_base) {
+				const existing_keys = new Set(board._master_columns.map(c => c.data));
+				const truly_new = new_cols.filter(c => !existing_keys.has(c.data));
+				if (truly_new.length) {
+					board._master_columns.push(...truly_new);
+					board.columns = board._master_columns.filter(c => !board._hidden_col_keys.has(c.data));
+					board.hot?.updateSettings({ columns: board.columns });
+					board.hot?.render();
+				}
+			} else if (sm.get_current()?.id === src_sheet.id) {
+				if (src_sheet._columns) {
+					// Secondary sheet uses _columns — inject directly, skip _apply_sheet
+					const existing = new Set(src_sheet._columns.map(c => c.data));
+					new_cols.forEach(c => { if (!existing.has(c.data)) src_sheet._columns.push(c); });
+					board.columns = src_sheet._columns;
+					board.hot?.updateSettings({ columns: board.columns });
+					board.hot?.loadData(src_sheet.data || []);
+				} else {
+					sm._apply_sheet(src_sheet);
+				}
 			}
-		} else if (sm.get_current()?.id === src_sheet.id) {
-			sm._apply_sheet(src_sheet);
+		};
+
+		// If the join-key field was not fetched for a secondary DocType sheet, get it now
+		const src_rows = _sheet_data(src_sheet);
+		const join_key_missing = src_sheet.doctype
+			&& src_rows.length > 0
+			&& !(candidate.src_field in src_rows[0]);
+		if (join_key_missing) {
+			frappe.db.get_list(src_sheet.doctype, { fields: ["name", candidate.src_field], limit: 0 })
+				.then(rows => {
+					const key_map = new Map(rows.map(r => [r.name, r[candidate.src_field] ?? ""]));
+					src_rows.forEach(row => { row[candidate.src_field] = key_map.get(row.name) ?? ""; });
+					_do_join();
+				});
+		} else {
+			_do_join();
 		}
 		// Persist lookup config to board state + user_settings
 		if (!board._applied_lookups) board._applied_lookups = [];
@@ -2005,7 +2109,9 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 				}
 				: null; // blank/formula sheet — cache is the only option
 		board._applied_lookups.push({
-			src_sheet_id:    src_sheet.id,      // identifies which sheet's data to enrich on restore
+			src_sheet_id:      src_sheet.id,      // ephemeral — used within-session only
+			src_sheet_label:   src_sheet.label,   // persistent identifier for cross-session restore
+			src_sheet_doctype: src_sheet.doctype || null,
 			tgt_sheet_id:    tgt_sheet.id,
 			tgt_sheet_label: tgt_sheet.label,
 			tgt_source,
@@ -2015,7 +2121,8 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 			_value_cache:    value_cache,
 		});
 		// Sync-patch to avoid race condition with concurrent saves.
-		const _slk_save = board._applied_lookups.map(({ _fresh_rows: _f, ...rest }) => rest);
+		// Never save data values (_value_cache, _fresh_rows) to user_settings — only config.
+		const _slk_save = board._applied_lookups.map(({ _fresh_rows: _f, _value_cache: _v, ...rest }) => rest);
 		if (!frappe.model.user_settings[board.doctype]) frappe.model.user_settings[board.doctype] = {};
 		frappe.model.user_settings[board.doctype].excel_smart_lookups = _slk_save;
 		frappe.model.user_settings.update(board.doctype, frappe.model.user_settings[board.doctype]);
@@ -2153,19 +2260,1154 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		});
 	}
 
-	// ─── GET DATA ─────────────────────────────────────────────────────────────
+	// ─── BULK IMPORT (Column Mapper) ──────────────────────────────────────────
+
+	/**
+	 * Open the Column Mapper modal after the user has chosen a data source via Get Data.
+	 * Allows mapping source columns → DocType fields, checks link dependencies, then
+	 * enters bulk-add-with-data mode for inline review before creating.
+	 */
+	_open_bulk_import_mapper(headers, rows, fieldnames) {
+		const doctype = this.board.doctype;
+		frappe.model.with_doctype(doctype, () => {
+			const meta = frappe.get_meta(doctype);
+			if (!meta) {
+				frappe.show_alert({ message: __("DocType meta not loaded"), indicator: "red" }, 3);
+				return;
+			}
+
+			const SKIP_TYPES = new Set(["Section Break","Column Break","Tab Break","HTML","Heading","Button","Fold"]);
+			// For import, include all non-structural fields (even read_only/hidden —
+			// bulk insert can set any field regardless of form-level read_only).
+			const usable = (meta.fields || []).filter(f =>
+				!SKIP_TYPES.has(f.fieldtype) && f.fieldname
+			);
+
+			const matched = this._bi_match_fields(headers, fieldnames, usable);
+
+			const esc = frappe.utils.escape_html;
+
+			// ── Select options (built once, pre-selected per row) ────────────────────────
+			const _select_opts = (pre_fn) =>
+				`<option value=""${!pre_fn ? " selected" : ""}>— ${__("Skip")} —</option>` +
+				usable.map(f => {
+					const lbl = __(f.label || f.fieldname);
+					return `<option value="${esc(f.fieldname)}"${f.fieldname === pre_fn ? " selected" : ""}>${esc(lbl)}</option>`;
+				}).join("");
+
+			// ── Detect child table columns (Frappe standard formats) ──────────────────────
+			// Format 1: "Field Label (table_fieldname)"  e.g. "Rate (items)"
+			// Format 2: "table_fieldname.child_fieldname" e.g. "items.rate"
+			const table_flds_meta = (meta.fields || []).filter(f => f.fieldtype === "Table");
+			const CHILD_LABEL_RE  = /^(.+?)\s*\((\w+)\)\s*$/;
+			const CHILD_DOT_RE    = /^(\w+)\.(\w+)$/;
+			const child_col_cfg   = [];
+
+			const parent_rows_html = [];
+			const child_groups   = {};   // table_field → { label, rows: html[] }
+
+			headers.forEach((h, i) => {
+				const h_t = h.trim();
+
+				// Format 2: table_field.child_field  e.g. "items.rate"
+				const dot_m = h_t.match(CHILD_DOT_RE);
+				if (dot_m) {
+					const [, tbl, cfld] = dot_m;
+					const tbl_meta = table_flds_meta.find(f => f.fieldname === tbl);
+					if (tbl_meta) {
+						if (!child_groups[tbl]) child_groups[tbl] = { label: __(tbl_meta.label || tbl), rows: [] };
+						child_groups[tbl].rows.push(`<div class="ev-bi-child-col-row">
+							<span class="ev-bi-cc-src">${esc(h_t)}</span>
+							<span class="ev-bi-cc-arrow">\u2192</span>
+							<span class="ev-bi-cc-fn">${esc(cfld)}</span>
+						</div>`);
+						child_col_cfg.push({ src_idx: i, table_field: tbl, child_field: cfld });
+						return;
+					}
+				}
+
+				// Format 1: Label (table_field)  e.g. "Rate (items)"
+				const lbl_m = h_t.match(CHILD_LABEL_RE);
+				if (lbl_m) {
+					const [, lbl, tbl] = lbl_m;
+					const tbl_meta = table_flds_meta.find(f => f.fieldname === tbl);
+					if (tbl_meta) {
+						if (!child_groups[tbl]) child_groups[tbl] = { label: __(tbl_meta.label || tbl), rows: [] };
+						child_groups[tbl].rows.push(`<div class="ev-bi-child-col-row">
+							<span class="ev-bi-cc-src">${esc(h_t)}</span>
+							<span class="ev-bi-cc-arrow">\u2192</span>
+							<span class="ev-bi-cc-fn">${esc(lbl.trim())}</span>
+						</div>`);
+						child_col_cfg.push({ src_idx: i, table_field: tbl, child_field_label: lbl.trim() });
+						return;
+					}
+				}
+
+				// Regular parent column — only show if a plausible BOM field match exists.
+				// Unrecognised columns (e.g. "item_group" when BOM has no such field) are
+				// hidden from the mapper but still collected as unmapped_cols for dep-graph.
+				const pre_fn = matched[i] || "";
+				if (!pre_fn) {
+					const fn_norm = h_t.toLowerCase().replace(/[\s\-]+/g, "_");
+					const has_field = usable.some(f =>
+						f.fieldname === fn_norm ||
+						(f.label || "").toLowerCase().replace(/\s+/g, "_") === fn_norm
+					);
+					if (!has_field) return;   // no meta match → skip mapper row silently
+				}
+				parent_rows_html.push(`<tr class="${pre_fn ? "ev-bi-row--matched" : ""}">
+					<td class="ev-bi-src-col">${esc(h_t)}</td>
+					<td>
+						<select class="ev-bi-map form-control form-control-sm" data-src-idx="${i}">
+							${_select_opts(pre_fn)}
+						</select>
+					</td>
+				</tr>`);
+			});
+
+			// \u2500\u2500 Child groups HTML \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+			const child_groups_html = Object.entries(child_groups).map(([, grp]) =>
+				`<div class="ev-bi-child-group">
+					<div class="ev-bi-child-grp-hdr">
+						<span class="ev-bi-child-grp-lbl">${esc(grp.label)}</span>
+						<span class="ev-bi-child-grp-cnt">${grp.rows.length}</span>
+					</div>
+					<div class="ev-bi-child-grp-body">${grp.rows.join("")}</div>
+				</div>`
+			).join("");
+
+			// \u2500\u2500 Stats \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+			const n_rows    = rows.length;
+			const n_parent  = parent_rows_html.length;
+			const n_auto    = child_col_cfg.length;
+			const n_matched = matched.filter(Boolean).length;
+
+			const auto_sec_html = child_col_cfg.length ? `
+				<div class="ev-bi-auto-section">
+					<div class="ev-bi-auto-sec-hdr">\u2713 ${__("Auto-detected child columns")}</div>
+					${child_groups_html}
+				</div>` : "";
+
+			// \u2500\u2500 Modal HTML \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+			this.$bi_modal = $(`
+				<div class="ev-bi-backdrop">
+					<div class="ev-bi-modal">
+						<div class="ev-bi-modal-hdr">
+							<span class="ev-bi-title">${__("Import into")} <span class="ev-bi-title-dt">${esc(doctype)}</span></span>
+							<button class="ev-bi-modal-close" aria-label="${__("Close")}">
+								<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
+							</button>
+						</div>
+						<div class="ev-bi-stats-bar">
+							<span class="ev-bi-stat-chip ev-bi-stat-chip--rows">${n_rows} ${__("rows")}</span>
+							\u00b7
+							<span class="ev-bi-stat-chip ev-bi-stat-chip--map">${n_parent - n_matched} ${__("to map")}</span>
+							\u00b7
+							<span class="ev-bi-stat-chip ev-bi-stat-chip--auto">\u2713 ${n_auto} ${__("auto-detected")}</span>
+						</div>
+						<div class="ev-bi-two-col">
+							<div class="ev-bi-col-map">
+								<table class="ev-bi-table">
+									<thead><tr>
+										<th>${__("Your Column")}</th>
+										<th>${__("Maps to")}</th>
+									</tr></thead>
+									<tbody>${parent_rows_html.join("")}</tbody>
+								</table>
+							</div>
+							${auto_sec_html ? `<div class="ev-bi-col-auto">${auto_sec_html}</div>` : ""}
+						</div>
+						<div class="ev-bi-modal-footer">
+							<button class="btn btn-sm btn-default ev-bi-back-btn">
+								<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12" style="margin-right:4px"><path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z"/></svg>
+								${__("Back")}
+							</button>
+							<div class="ev-bi-foot-right">
+								<button class="btn btn-sm btn-default ev-bi-cancel-btn">${__("Cancel")}</button>
+								<button class="btn btn-sm btn-primary ev-bi-import-btn">${__("Next")} →</button>
+							</div>
+						</div>
+					</div>
+				</div>
+			`).appendTo($("body"));
+
+			// ── Event bindings ────────────────────────────────────────────────────────
+			this.$bi_modal
+				.on("click", ".ev-bi-modal-close, .ev-bi-cancel-btn", () => {
+					this.$bi_modal?.remove(); this.$bi_modal = null;
+				})
+				.on("click", ".ev-bi-back-btn", () => {
+					this.$bi_modal?.remove(); this.$bi_modal = null;
+					this._gd_import_mode = true;
+					this._gd_open();
+				})
+				.on("click", ".ev-bi-import-btn", () => {
+					const col_map = {};
+					this.$bi_modal.find(".ev-bi-map").each(function () {
+						const fn  = $(this).val();
+						const idx = parseInt($(this).attr("data-src-idx"));
+						if (fn) col_map[idx] = fn;
+					});
+					const mapped_rows = this._bi_build_records(rows, col_map, child_col_cfg, headers);
+					if (!mapped_rows.length) {
+						frappe.show_alert({ message: __("No records found."), indicator: "orange" }, 3);
+						return;
+					}
+					this.$bi_modal?.remove();
+					this.$bi_modal = null;
+					this._bi_show_dep_graph(mapped_rows, rows, headers, fieldnames, col_map, child_col_cfg);
+				});
+
+			// Backdrop click closes
+			this.$bi_modal.on("click.bi", (e) => {
+				if ($(e.target).hasClass("ev-bi-backdrop")) {
+					this.$bi_modal?.remove(); this.$bi_modal = null;
+				}
+			});
+		});
+	}
+
+	// \u2500\u2500\u2500 BULK IMPORT HELPERS \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+
+	/**
+	 * Match CSV headers to DocType fieldnames.
+	 * 4-layer: L1 exact fieldnames list \u2192 L2 exact fieldname set \u2192 L3 exact scrubbed label \u2192 L4 bare scrubbed label.
+	 */
+	_bi_match_fields(headers, fieldnames, usable) {
+		const scrub = s => (s || "").toLowerCase().replace(/\s+/g, "_").replace(/[^a-z0-9_]/g, "");
+		const fn_set  = new Set(usable.map(f => f.fieldname));
+		const lbl_map = {};
+		usable.forEach(f => {
+			const lbl = (f.label || f.fieldname || "").toLowerCase();
+			lbl_map[lbl]          = f.fieldname;
+			lbl_map[scrub(f.label || f.fieldname)] = f.fieldname;
+		});
+		const fn_list = new Set((fieldnames || []).map(s => (s || "").toLowerCase()));
+		return headers.map(h => {
+			const h_lc = (h || "").trim().toLowerCase();
+			const h_sc = scrub(h);
+			// L1: in provided fieldnames list
+			if (fn_list.has(h_lc)) return fn_set.has(h_lc) ? h_lc : null;
+			// L2: exact match in usable fieldname set
+			if (fn_set.has(h_lc)) return h_lc;
+			// L3: scrubbed label exact
+			if (lbl_map[h_lc]) return lbl_map[h_lc];
+			// L4: bare scrubbed
+			if (lbl_map[h_sc]) return lbl_map[h_sc];
+			return null;
+		});
+	}
+
+	/**
+	 * Build mapped record objects from raw CSV rows + column mapping.
+	 * Returns array of plain objects ready for frappe.get_doc.
+	 */
+	_bi_build_records(rows, col_map, child_col_cfg, headers) {
+		const mapped_idxs = Object.keys(col_map).map(Number);
+		const child_idxs  = new Set((child_col_cfg || []).map(c => c.src_idx));
+		const is_cont = (row) => mapped_idxs.length > 0 &&
+			mapped_idxs.every(idx => !String(row[idx] ?? "").trim());
+
+		// Extra columns: not in col_map and not child-table source — folded into record
+		// so the dep-graph backend can find them via meta Link-field scan (e.g. item_group).
+		const extra_idxs = headers
+			? headers.map((h, i) => ({ i, fn: (h || "").trim().toLowerCase().replace(/[\s\-]+/g, "_") }))
+				.filter(({ i, fn }) => fn && !mapped_idxs.includes(i) && !child_idxs.has(i) && !fn.includes("."))
+			: [];
+
+		const groups = [];
+		for (const row of rows) {
+			if (!is_cont(row)) groups.push({ parent: row, cont: [] });
+			else if (groups.length) groups[groups.length - 1].cont.push(row);
+		}
+
+		return groups.map(({ parent, cont }) => {
+			const obj = {};
+			Object.entries(col_map).forEach(([idx_s, fn]) => {
+				const v = String(parent[parseInt(idx_s)] ?? "").trim();
+				if (v) obj[fn] = v;
+			});
+			// Fold extra column values into record for dep-graph analysis
+			extra_idxs.forEach(({ i, fn }) => {
+				const v = String(parent[i] ?? "").trim();
+				if (v && !(fn in obj)) obj[fn] = v;
+			});
+			const by_table = {};
+			[parent, ...cont].forEach(row => {
+				const per_table = {};
+				child_col_cfg.forEach(cfg => {
+					const v = String(row[cfg.src_idx] ?? "").trim();
+					if (!v) return;
+					if (!per_table[cfg.table_field]) per_table[cfg.table_field] = {};
+					if (cfg.child_field) per_table[cfg.table_field][cfg.child_field] = v;
+				});
+				Object.entries(per_table).forEach(([tbl, child_obj]) => {
+					if (Object.keys(child_obj).length) {
+						if (!by_table[tbl]) by_table[tbl] = [];
+						by_table[tbl].push(child_obj);
+					}
+				});
+			});
+			Object.assign(obj, by_table);
+			return obj;
+		});
+	}
+
+	/**
+	 * Process CSV rows \u2192 record objects with parent fields + child arrays, then
+	 * dispatch to Tree import (TreeImportEngine) or flat import (_enter_bulk_add_mode_with_data).
+	 */
+	_bi_do_import(_headers, rows, col_map, child_col_cfg, $modal) {
+		const doctype = this.board.doctype;
+		const meta    = frappe.get_meta(doctype);
+
+		const mapped_rows = this._bi_build_records(rows, col_map, child_col_cfg, _headers);
+		if (!mapped_rows.length) {
+			frappe.show_alert({ message: __("No records found in the file."), indicator: "orange" }, 4);
+			return;
+		}
+
+		// \u2500\u2500 Tree vs flat dispatch \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
+		const tree_info = this._bi_detect_tree_pattern(doctype);
+
+		if (tree_info.pattern && mapped_rows.length) {
+			const engine = new frappe.views.TreeImportEngine({
+				doctype,
+				meta,
+				mapped_rows,
+				tree_info,
+				$modal,
+				on_done: () => { this.board.list_view?.refresh(); },
+			});
+			engine.run();
+			return;
+		}
+
+		// Flat import
+		$modal?.remove();
+		this.board._enter_bulk_add_mode_with_data(mapped_rows);
+	}
+
+	/**
+	 * Step 2: Fetch dependency analysis from server, then render the node graph.
+	 */
+	async _bi_show_dep_graph(mapped_rows, rows, headers, fieldnames, col_map, child_col_cfg) {
+		const doctype = this.board.doctype;
+
+		// ── Build unmapped_cols: CSV columns not mapped to any BOM field or child table ──
+		// These may contain data useful for dep DocType fields (e.g. "item_group" col B
+		// isn't a BOM field but IS a field on Item → tells us which Item Groups are needed).
+		const mapped_main_idxs = new Set(Object.keys(col_map).map(Number));
+		const child_src_idxs   = new Set((child_col_cfg || []).map(cc => cc.src_idx));
+		const unmapped_cols = {};
+		// col_pair_data[fn] = {key_header, col_header, pairs:[{key,val}]}
+		// Pairs key=first-mapped-col value, val=unmapped col value — used by View Mapping dialog
+		const col_pair_data = {};
+		const first_mapped_idx = Math.min(...[...mapped_main_idxs]);
+		headers.forEach((h, i) => {
+			if (mapped_main_idxs.has(i) || child_src_idxs.has(i)) return;
+			const fn = (h || "").trim().toLowerCase().replace(/[\s\-]+/g, "_");
+			if (!fn) return;
+			const with_val = rows.map(r => (r[i] ?? "").toString().trim()).filter(Boolean);
+			const unique_vals = [...new Set(with_val)];
+			if (!unique_vals.length) return;
+			unmapped_cols[fn] = { vals: unique_vals, rows_with_value: with_val.length };
+			// Build per-row pairs for View Mapping dialog (key = first mapped col value)
+			const pairs = rows
+				.map(r => ({
+					key: (r[first_mapped_idx] ?? "").toString().trim(),
+					val: (r[i] ?? "").toString().trim(),
+				}))
+				.filter(p => p.key);
+			if (pairs.some(p => p.val)) {
+				col_pair_data[fn] = {
+					key_header : headers[first_mapped_idx] || "Key",
+					col_header : h || fn,
+					pairs,
+				};
+			}
+		});
+
+		// ── Virtual state (deep-copy on first call, preserved across re-renders) ──────
+		// Stores the canonical mutable copy of all import data. User edits from the
+		// Fix panel are accumulated here so re-analysis never needs the original CSV.
+		// Destroyed on Back / Cancel / successful import.
+		if (!this._bi_vs) {
+			this._bi_vs = {
+				mapped_rows  : JSON.parse(JSON.stringify(mapped_rows)),
+				rows         : JSON.parse(JSON.stringify(rows)),
+				headers      : headers ? [...headers] : [],
+				fieldnames   : fieldnames ? [...fieldnames] : [],
+				col_map      : {...col_map},
+				child_col_cfg: child_col_cfg ? JSON.parse(JSON.stringify(child_col_cfg)) : null,
+				unmapped_cols: JSON.parse(JSON.stringify(unmapped_cols)),
+				col_pair_data: JSON.parse(JSON.stringify(col_pair_data)),
+				user_edits   : {},   // {fn: {item_name → value}} — accumulated fix panel edits
+				dt_cache     : {},   // {doctype → [names]}       — autocomplete cache
+			};
+		}
+
+		// Loading backdrop
+		const $loading = $(`
+			<div class="ev-bi-backdrop">
+				<div class="ev-dg-loading">
+					<div class="ev-dg-spinner"></div>
+					<div class="ev-dg-loading-txt">${__("Analysing dependencies…")}</div>
+				</div>
+			</div>
+		`).appendTo($("body"));
+
+		let graph;
+		try {
+			graph = await frappe.xcall("excel_view.tree_import.analyze_import_deps", {
+				doctype,
+				records_json: JSON.stringify(mapped_rows),
+			});
+		} catch (e) {
+			$loading.remove();
+			frappe.show_alert({ message: __("Dependency analysis failed."), indicator: "red" }, 4);
+			return;
+		}
+		$loading.remove();
+
+		this._bi_render_dep_graph(graph, mapped_rows, rows, headers, fieldnames, col_map, child_col_cfg, col_pair_data);
+	}
+
+	/**
+	 * Render the dependency graph modal.
+	 */
+	_bi_render_dep_graph(graph, mapped_rows, rows, headers, fieldnames, col_map, child_col_cfg, col_pair_data = {}) {
+		const doctype   = this.board.doctype;
+		const { nodes, edges } = graph;
+
+		// ── 1. Layout ──────────────────────────────────────────────────────────────
+		// BFS backwards from main node to assign column depth
+		const adj_in = {};
+		nodes.forEach(n => { adj_in[n.id] = []; });
+		edges.forEach(e => { if (adj_in[e.to]) adj_in[e.to].push(e.from); });
+
+		const col_depth = {};   // node_id → col depth (0 = main/rightmost, increases leftward)
+		const queue = [doctype];
+		col_depth[doctype] = 0;
+		while (queue.length) {
+			const cur = queue.shift();
+			for (const src of (adj_in[cur] || [])) {
+				if (col_depth[src] === undefined) {
+					col_depth[src] = col_depth[cur] + 1;
+					queue.push(src);
+				}
+			}
+		}
+
+		const max_depth = Math.max(...Object.values(col_depth), 0);
+		nodes.forEach(n => {
+			// display col: 0=leftmost dep, max_depth=main
+			n._col = max_depth - (col_depth[n.id] ?? 0);
+		});
+
+		// Group by display column
+		const by_col = {};
+		nodes.forEach(n => {
+			if (!by_col[n._col]) by_col[n._col] = [];
+			by_col[n._col].push(n);
+		});
+
+		// ── 2. Pixel positions ─────────────────────────────────────────────────────
+		const NW = 210, NH = 82, COL_GAP = 88, ROW_GAP = 14, PAD = 32;
+		const num_cols  = max_depth + 1;
+		const max_rows  = Math.max(...Object.values(by_col).map(a => a.length));
+		const canvas_w  = PAD * 2 + num_cols * NW + (num_cols - 1) * COL_GAP;
+		const canvas_h  = PAD * 2 + max_rows * NH + Math.max(0, max_rows - 1) * ROW_GAP;
+
+		Object.entries(by_col).forEach(([col_s, col_nodes]) => {
+			const col = parseInt(col_s);
+			const cx  = PAD + col * (NW + COL_GAP);
+			const total_h = col_nodes.length * NH + Math.max(0, col_nodes.length - 1) * ROW_GAP;
+			const sy  = PAD + (canvas_h - PAD * 2 - total_h) / 2;
+			col_nodes.forEach((n, i) => {
+				n._x = cx;
+				n._y = sy + i * (NH + ROW_GAP);
+			});
+		});
+
+		// ── 3. Node card HTML ──────────────────────────────────────────────────────
+		const esc = frappe.utils.escape_html;
+
+		// DocType → SVG path (Heroicons outline, viewBox 0 0 24 24)
+		const _DT_PATHS = {
+			"BOM"         : "M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z",
+			"Item"        : "M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4",
+			"Item Group"  : "M3 7v10a2 2 0 002 2h14a2 2 0 002-2V9a2 2 0 00-2-2h-6l-2-2H5a2 2 0 00-2 2z",
+			"UOM"         : "M3 6l3 1m0 0l-3 9a5.002 5.002 0 006.001 0M6 7l3 9M6 7l6-2m6 2l3-1m-3 1l-3 9a5.002 5.002 0 006.001 0M18 7l3 9m-3-9l-6-2m0-2v2m0 16V5m0 16H9m3 0h3",
+			"Company"     : "M19 21V5a2 2 0 00-2-2H7a2 2 0 00-2 2v16m14 0h2m-2 0H5m14 0H5m-2 0h2M9 7h1m-1 4h1m4-4h1m-1 4h1m-5 10v-5a1 1 0 011-1h2a1 1 0 011 1v5m-4 0h4",
+			"Operation"   : "M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065zM15 12a3 3 0 11-6 0 3 3 0 016 0z",
+			"Workstation" : "M9.75 17L9 20l-1 1h8l-1-1-.75-3M3 13h18M5 17h14a2 2 0 002-2V5a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z",
+			"Routing"     : "M9 20l-5.447-2.724A1 1 0 013 16.382V5.618a1 1 0 011.447-.894L9 7m0 13l6-3m-6 3V7m6 10l4.553 2.276A1 1 0 0021 18.382V7.618a1 1 0 00-.553-.894L15 4m0 13V4m0 0L9 7",
+			"Currency"    : "M12 8c-1.657 0-3 .895-3 2s1.343 2 3 2 3 .895 3 2-1.343 2-3 2m0-8c1.11 0 2.08.402 2.599 1M12 8V7m0 1v8m0 0v1m0-1c-1.11 0-2.08-.402-2.599-1M21 12a9 9 0 11-18 0 9 9 0 0118 0z",
+			"Warehouse"   : "M8 14v3m4-3v3m4-3v3M3 21h18M3 10h18M3 7l9-4 9 4M4 10h16v11H4V10z",
+			"Customer"    : "M17 20h5v-2a3 3 0 00-5.356-1.857M17 20H7m10 0v-2c0-.656-.126-1.283-.356-1.857M7 20H2v-2a3 3 0 015.356-1.857M7 20v-2c0-.656.126-1.283.356-1.857m0 0a5.002 5.002 0 019.288 0",
+			"Supplier"    : "M21 13.255A23.931 23.931 0 0112 15c-3.183 0-6.22-.62-9-1.745M16 6V4a2 2 0 00-2-2h-4a2 2 0 00-2 2v2m4 6h.01M5 20h14a2 2 0 002-2V8a2 2 0 00-2-2H5a2 2 0 00-2 2v10a2 2 0 002 2z",
+		};
+		const _DEFAULT_PATH = "M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z";
+
+		const _status_class = (n) => {
+			if (n.type === "main")    return "ev-dg-node--main";
+			if (n.total === 0)        return "ev-dg-node--structural";
+			if (n.to_create === 0)    return "ev-dg-node--ok";
+			if (n.existing > 0)       return "ev-dg-node--partial";
+			return "ev-dg-node--create";
+		};
+
+		const _icon_html = (n) => {
+			const sc  = _status_class(n);
+			const d   = _DT_PATHS[n.id] || _DEFAULT_PATH;
+			return `<div class="ev-dg-icon ${sc}">
+				<svg viewBox="0 0 24 24" width="15" height="15" fill="none"
+				     stroke="currentColor" stroke-width="1.75"
+				     stroke-linecap="round" stroke-linejoin="round">
+					<path d="${d}"/>
+				</svg>
+			</div>`;
+		};
+
+		const _stat_line = (n) => {
+			if (n.type === "main")
+				return `<div class="ev-dg-stat">${n.total} ${__("records to import")}</div>`;
+			if (n.total === 0)
+				return `<div class="ev-dg-stat ev-dg-stat--structural">${__("Prerequisite")}</div>`;
+			const parts = [];
+			if (n.existing)  parts.push(`<span class="ev-dg-ok">\u2713 ${n.existing}</span>`);
+			if (n.to_create) parts.push(`<span class="ev-dg-cr">+ ${n.to_create}</span>`);
+			// Incomplete nodes (unmapped col, coverage < 100%): show fraction covered
+			if (n.incomplete && n.coverage_have != null) {
+				parts.push(`<span class="ev-dg-cov">${n.coverage_have}/${n.coverage_total} ${__("covered")}</span>`);
+			}
+			let stat_html = `<div class="ev-dg-stat">${parts.join(" &nbsp;")} ${__("records")}</div>`;
+			// Show which CSV column was assumed as the source (e.g. "via \"item_group\" col")
+			if (n.source_col) {
+				stat_html += `<div class="ev-dg-via">${__("via")} <code>${esc(n.source_col)}</code> ${__("col")}</div>`;
+			}
+			return stat_html;
+		};
+
+		const nodes_html = nodes.map(n => {
+			const extra_cls    = n.incomplete ? " ev-dg-node--incomplete" : "";
+			const data_src_col = n.source_col ? ` data-source-col="${esc(n.source_col)}"` : "";
+			const footer_html  = n.incomplete ? `
+				<div class="ev-dg-node-footer">
+					${col_pair_data[n.source_col]
+						? `<button class="ev-dg-map-btn">${__("View Mapping")}</button>` : ""}
+					<button class="ev-dg-fix-btn">${__("Fix")} →</button>
+				</div>` : "";
+			return `
+			<div class="ev-dg-node ${_status_class(n)}${extra_cls}"
+			     style="left:${n._x}px;top:${n._y}px;width:${NW}px;"
+			     data-id="${esc(n.id)}" title="${esc(n.id)}"${data_src_col}>
+				<div class="ev-dg-node-prog-wrap"><div class="ev-dg-node-prog-fill"></div></div>
+				<div class="ev-dg-node-row">
+					${_icon_html(n)}
+					<div class="ev-dg-node-text">
+						<div class="ev-dg-label">${esc(n.label || n.id)}</div>
+						${_stat_line(n)}
+					</div>
+				</div>
+				${footer_html}
+			</div>`;
+		}).join("");
+
+		// ── 4. SVG edges ──────────────────────────────────────────────────────────
+		const node_map = {};
+		nodes.forEach(n => { node_map[n.id] = n; });
+
+		// Memoised DFS: is this dep chain blocked by missing/incomplete data?
+		// GREEN = dep data is complete all the way up the chain (even if records need creating)
+		// RED   = dep data is missing or incomplete for some references (cascade from upstream)
+		// Uses a _visiting set to safely handle any graph cycles (no stack overflow).
+		const _blocked_cache = {};
+		const _visiting      = new Set();
+		const _is_blocked = (nid) => {
+			if (nid in _blocked_cache) return _blocked_cache[nid];
+			if (_visiting.has(nid))    return (_blocked_cache[nid] = false); // cycle → treat as unblocked
+			const n = node_map[nid];
+			if (!n || n.total === 0) return (_blocked_cache[nid] = false);
+			if (n.incomplete)        return (_blocked_cache[nid] = true);
+			_visiting.add(nid);
+			const blocked = edges.filter(e => e.to === nid).some(e => _is_blocked(e.from));
+			_visiting.delete(nid);
+			return (_blocked_cache[nid] = blocked);
+		};
+
+		// Per-edge: {color, dash, marker_id}
+		const _edge_style = (e) => {
+			const src = node_map[e.from];
+			if (!src || src.total === 0) return { color: "#94a3b8", dash: "5,3", mid: "ev-dg-arr-gray" };
+			if (_is_blocked(e.from))     return { color: "#ef4444", dash: "none", mid: "ev-dg-arr-red" };
+			return                               { color: "#22c55e", dash: "none", mid: "ev-dg-arr-grn" };
+		};
+
+		const paths_html = edges.map(e => {
+			const src = node_map[e.from];
+			const tgt = node_map[e.to];
+			if (!src || !tgt) return "";
+			const x1 = src._x + NW, y1 = src._y + NH / 2;
+			const x2 = tgt._x - 2,  y2 = tgt._y + NH / 2;
+			const cx  = (x1 + x2) / 2;
+			const { color, dash, mid } = _edge_style(e);
+			return `<path fill="none" stroke="${color}" stroke-width="1.5"
+			              stroke-dasharray="${dash}" marker-end="url(#${mid})"
+			              d="M${x1},${y1} C${cx},${y1} ${cx},${y2} ${x2},${y2}"/>`;
+		}).join("");
+
+		// ── 5. Legend ──────────────────────────────────────────────────────────────
+		const legend_html = `
+			<div class="ev-dg-legend">
+				<span class="ev-dg-legend-item"><span class="ev-dg-dot ev-dg-node--ok"></span>${__("All exist in DB")}</span>
+				<span class="ev-dg-legend-item"><span class="ev-dg-dot ev-dg-node--partial"></span>${__("Some to create")}</span>
+				<span class="ev-dg-legend-item"><span class="ev-dg-dot ev-dg-node--create"></span>${__("Will be created")}</span>
+				<span class="ev-dg-legend-item"><span class="ev-dg-legend-line ev-dg-legend-line--green"></span>${__("Data complete")}</span>
+				<span class="ev-dg-legend-item"><span class="ev-dg-legend-line ev-dg-legend-line--red"></span>${__("Data missing")}</span>
+			</div>
+		`;
+
+		// ── 6. Modal ───────────────────────────────────────────────────────────────
+		this.$bi_dg_modal = $(`
+			<div class="ev-bi-backdrop">
+				<div class="ev-dg-modal">
+					<div class="ev-bi-modal-hdr">
+						<span class="ev-bi-title">${__("Import into")} <span class="ev-bi-title-dt">${esc(doctype)}</span> <span class="ev-dg-step-badge">${__("Step 2 — Dependency Review")}</span></span>
+						<button class="ev-bi-modal-close ev-dg-close-btn" aria-label="${__("Close")}">
+							<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
+						</button>
+					</div>
+					<div class="ev-dg-canvas-wrap">
+						<div class="ev-dg-canvas" style="width:${canvas_w}px;height:${canvas_h}px;position:relative;">
+							<svg class="ev-dg-svg" width="${canvas_w}" height="${canvas_h}" style="position:absolute;inset:0;overflow:visible;">
+								<defs>
+									<marker id="ev-dg-arr-gray" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+										<path d="M0,0 L7,3.5 L0,7 Z" fill="#94a3b8"/>
+									</marker>
+									<marker id="ev-dg-arr-grn" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+										<path d="M0,0 L7,3.5 L0,7 Z" fill="#22c55e"/>
+									</marker>
+									<marker id="ev-dg-arr-red" markerWidth="7" markerHeight="7" refX="6" refY="3.5" orient="auto">
+										<path d="M0,0 L7,3.5 L0,7 Z" fill="#ef4444"/>
+									</marker>
+								</defs>
+								${paths_html}
+							</svg>
+							${nodes_html}
+						</div>
+					</div>
+					<div class="ev-dg-footer">
+						${legend_html}
+						<div class="ev-bi-foot-right">
+							<button class="btn btn-sm btn-default ev-dg-back-btn">
+								<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12" style="margin-right:4px"><path fill-rule="evenodd" d="M11.354 1.646a.5.5 0 0 1 0 .708L5.707 8l5.647 5.646a.5.5 0 0 1-.708.708l-6-6a.5.5 0 0 1 0-.708l6-6a.5.5 0 0 1 .708 0z"/></svg>
+								${__("Back")}
+							</button>
+							<button class="btn btn-sm btn-default ev-dg-cancel-btn">${__("Cancel")}</button>
+			<button class="btn btn-sm btn-primary ev-dg-import-btn">${__("Import")} ${mapped_rows.length} ${__("records")}</button>
+						</div>
+					</div>
+				</div>
+			</div>
+		`).appendTo($("body"));
+
+		this.$bi_dg_modal
+			.on("click", ".ev-bi-modal-close, .ev-dg-cancel-btn", () => {
+				this.$bi_dg_modal?.remove(); this.$bi_dg_modal = null;
+				this._bi_vs = null;   // destroy virtual state
+			})
+			.on("click", ".ev-dg-back-btn", () => {
+				this.$bi_dg_modal?.remove(); this.$bi_dg_modal = null;
+				this._bi_vs = null;   // destroy virtual state — user re-maps from scratch
+				this._open_bulk_import_mapper(headers, rows, fieldnames);
+			})
+			.on("click", ".ev-dg-import-btn", async () => {
+				const _vs            = this._bi_vs;
+				const _rows          = _vs?.rows          || rows;
+				const _col_map       = _vs?.col_map       || col_map;
+				const _child_col_cfg = _vs?.child_col_cfg ?? child_col_cfg;
+				const _mapped_rows   = this._bi_build_records(_rows, _col_map, _child_col_cfg, _vs?.headers);
+				if (!_mapped_rows.length) return;
+
+				// Lock UI
+				const $modal = this.$bi_dg_modal;
+				$modal.find(".ev-dg-import-btn, .ev-dg-back-btn, .ev-dg-cancel-btn, .ev-bi-modal-close")
+				      .prop("disabled", true).css("opacity", .45);
+				$modal.find(".ev-dg-import-btn").text(__("Creating deps…"));
+
+				const job_id = `ev_imp_${Date.now()}`;
+
+				// Per-node progress updater — each node tracks its own done/total
+				const _node_prog = {};  // {node_id: {done, total}}
+				nodes.forEach(n => { _node_prog[n.id] = { done: 0, total: n.to_create || 0 }; });
+				_node_prog[doctype] = { done: 0, total: _mapped_rows.length };
+
+				const _update_node = (node_id, done, total) => {
+					_node_prog[node_id] = { done, total };
+					const $n  = $modal.find(`.ev-dg-node[data-id="${node_id}"]`);
+					const pct = total ? Math.round(done / total * 100) : (done > 0 ? 100 : 0);
+					$n.find(".ev-dg-node-prog-fill").css("width", pct + "%");
+					$n.find(".ev-dg-stat").text(
+						node_id === doctype
+							? `${done} / ${total}`
+							: `✓ ${done} / ${total}`
+					);
+					if (pct >= 100 && !$n.hasClass("ev-dg-node--import-done")) {
+						$n.addClass("ev-dg-node--import-done");
+						if (!$n.find(".ev-dg-check").length)
+							$n.find(".ev-dg-node-row").append('<span class="ev-dg-check">✓</span>');
+					}
+				};
+
+				const _finish_all = (main_done, errors) => {
+					frappe.realtime.off("ev_tree_progress");
+					this._bi_vs = null;
+					if (!errors.length) {
+						_update_node(doctype, main_done, main_done);
+						// Show success banner; keep Import button disabled
+						$modal.find(".ev-dg-import-btn").prop("disabled", true).text(__("Import complete"));
+						if (!$modal.find(".ev-dg-success-banner").length) {
+							$modal.find(".ev-dg-footer").prepend(
+								`<div class="ev-dg-success-banner">✓ ${main_done} ${__("records imported successfully")}</div>`
+							);
+						}
+						setTimeout(() => {
+							$modal.remove(); this.$bi_dg_modal = null;
+							frappe.show_alert({ message: `${main_done} ${__("records created successfully")}`, indicator: "green" }, 4);
+							this.board.list_view?.refresh();
+						}, 2500);
+					} else {
+						$modal.find(`.ev-dg-node[data-id="${doctype}"]`).addClass("ev-dg-node--import-error");
+						$modal.find(".ev-dg-import-btn").prop("disabled", false).css("opacity", 1).text(__("Import") + " " + _mapped_rows.length + " " + __("records"));
+						$modal.find(".ev-dg-cancel-btn, .ev-bi-modal-close").prop("disabled", false).css("opacity", 1);
+						const errs = errors.map(e => `${esc(e.doctype || e.name || "")}: ${esc(e.error || "")}`).join("\n");
+						frappe.msgprint({ title: __("Import errors"), message: `<pre style="font-size:11px">${errs}</pre>`, indicator: "red" });
+					}
+				};
+
+				// ── Step 1: Pre-create all dep records ──────────────────────────────
+				const dep_nodes = nodes.filter(n => n.type !== "main" && (n.to_create || 0) > 0);
+				if (dep_nodes.length) {
+					// Track per-dep-node progress from ev_dep_progress events
+					const dep_done = {};
+					dep_nodes.forEach(n => { dep_done[n.id] = 0; });
+
+					// Counter-based completion: wait until all expected events received or timeout
+					const dep_total_expected = dep_nodes.reduce((s, n) => s + (n.to_create || 0), 0);
+					let dep_received = 0;
+					let _dep_resolve = null;
+					const dep_done_promise = new Promise(r => { _dep_resolve = r; });
+
+					frappe.realtime.on("ev_dep_progress", (data) => {
+						if (data.job_id !== job_id) return;
+						if (data.status === "ok") {
+							dep_received++;
+							dep_done[data.doctype] = (dep_done[data.doctype] || 0) + 1;
+							const nd = nodes.find(n => n.id === data.doctype);
+							_update_node(data.doctype, dep_done[data.doctype], nd?.to_create || data.total || 1);
+							if (dep_received >= dep_total_expected) _dep_resolve?.();
+						}
+					});
+
+					// Build per-record attribute hints from CSV data (stock_uom per item, etc.)
+					const _dep_attrs = {};
+					const _child_cfg = _vs?.child_col_cfg;
+					const _vs_rows   = _vs?.rows || [];
+					if (_child_cfg) {
+						for (const [, col_map] of Object.entries(_child_cfg)) {
+							const ic_col  = col_map["item_code"];
+							const uom_col = col_map["uom"];
+							if (ic_col === undefined || uom_col === undefined) continue;
+							_dep_attrs["Item"] = _dep_attrs["Item"] || {};
+							_vs_rows.forEach(r => {
+								const ic  = (r[ic_col]  || "").trim();
+								const uom = (r[uom_col] || "").trim();
+								if (ic && uom && !_dep_attrs["Item"][ic]) {
+									_dep_attrs["Item"][ic] = { stock_uom: uom };
+								}
+							});
+						}
+					}
+					// Merge item_group from Fix-panel user_edits
+					const _ig_map = _vs?.user_edits?.["item_group"] || {};
+					Object.entries(_ig_map).forEach(([ic, ig]) => {
+						_dep_attrs["Item"] = _dep_attrs["Item"] || {};
+						_dep_attrs["Item"][ic] = { ...(_dep_attrs["Item"][ic] || {}), item_group: ig };
+					});
+
+					// Build per-Routing operations from CSV rows
+					// The dep graph shows Operation→Routing→BOM; Routing must be created WITH operations
+					const _routing_col = _vs?.col_map?.["routing"];
+					const _item_col    = _vs?.col_map?.["item"];
+					if (_child_cfg && _routing_col !== undefined && _item_col !== undefined) {
+						// Find the child table key that has operation/workstation/time_in_mins
+						for (const [, op_map] of Object.entries(_child_cfg)) {
+							const op_col  = op_map["operation"];
+							const ws_col  = op_map["workstation"];
+							const tm_col  = op_map["time_in_mins"];
+							if (op_col === undefined) continue;
+							let cur_routing = null;
+							_vs_rows.forEach(r => {
+								const item = (r[_item_col] || "").trim();
+								if (item) cur_routing = (r[_routing_col] || "").trim() || null;
+								if (!cur_routing) return;
+								const op = (r[op_col]  || "").trim();
+								const ws = ws_col !== undefined ? (r[ws_col] || "").trim() : "";
+								const tm = tm_col !== undefined ? parseFloat(r[tm_col]) || 0 : 0;
+								if (!op) return;
+								_dep_attrs["Routing"] = _dep_attrs["Routing"] || {};
+								_dep_attrs["Routing"][cur_routing] = _dep_attrs["Routing"][cur_routing] || { operations: [] };
+								const already = _dep_attrs["Routing"][cur_routing].operations;
+								if (!already.some(x => x.operation === op && x.workstation === ws)) {
+									already.push({ operation: op, workstation: ws, time_in_mins: tm });
+								}
+							});
+							break; // only process first matching child table
+						}
+					}
+
+					try {
+						const dep_result = await frappe.xcall("excel_view.tree_import.pre_create_deps", {
+							doctype,
+							nodes_json      : JSON.stringify(nodes),
+							edges_json      : JSON.stringify(graph.edges || []),
+							user_edits_json : JSON.stringify(_vs?.user_edits || {}),
+							dep_attrs_json  : JSON.stringify(_dep_attrs),
+							job_id,
+						});
+						// Wait for all expected events (or 8s safety timeout) before removing handler
+						await Promise.race([dep_done_promise, new Promise(r => setTimeout(r, 8000))]);
+						frappe.realtime.off("ev_dep_progress");
+						if (dep_result.errors?.length) {
+							_finish_all(0, dep_result.errors);
+							return;
+						}
+					} catch(err) {
+						frappe.realtime.off("ev_dep_progress");
+						_finish_all(0, [{ doctype: "deps", error: String(err) }]);
+						return;
+					}
+				}
+
+				// ── Step 2: Create main records ─────────────────────────────────────
+				$modal.find(".ev-dg-import-btn").text(__("Importing…"));
+				const tree_info = this._bi_detect_tree_pattern(doctype);
+				let main_done = 0;
+
+				if (tree_info.pattern) {
+					let _tree_resolve = null;
+					const tree_done_promise = new Promise(r => { _tree_resolve = r; });
+					frappe.realtime.on("ev_tree_progress", (data) => {
+						if (data.job_id !== job_id) return;
+						if (data.status === "ok") {
+							main_done++;
+							_update_node(doctype, main_done, _mapped_rows.length);
+							if (main_done >= _mapped_rows.length) _tree_resolve?.();
+						}
+						if (data.status === "rolled_back") _tree_resolve?.();
+					});
+					try {
+						const result = await frappe.xcall("excel_view.tree_import.import_tree", {
+							doctype,
+							records_json     : JSON.stringify(_mapped_rows),
+							pattern          : String(tree_info.pattern),
+							pattern_info_json: JSON.stringify(tree_info),
+							job_id,
+						});
+						await Promise.race([tree_done_promise, new Promise(r => setTimeout(r, 15000))]);
+						frappe.realtime.off("ev_tree_progress");
+						if (result.status === "rolled_back") {
+							_finish_all(0, result.errors || []);
+						} else {
+							_finish_all(result.created || main_done, result.errors || []);
+						}
+					} catch(err) {
+						frappe.realtime.off("ev_tree_progress");
+						_finish_all(main_done, [{ doctype, error: String(err) }]);
+					}
+				} else {
+					const errors = [];
+					for (let i = 0; i < _mapped_rows.length; i++) {
+						try {
+							await frappe.xcall("frappe.client.insert", { doc: { doctype, ..._mapped_rows[i] } });
+							main_done++;
+						} catch(err) {
+							errors.push({ doctype, name: _mapped_rows[i].name || `Row ${i+1}`, error: String(err) });
+						}
+						_update_node(doctype, i + 1, _mapped_rows.length);
+					}
+					_finish_all(main_done, errors);
+				}
+			})
+			.on("click", ".ev-dg-map-btn", (e) => {
+				e.stopPropagation();
+				// Prevent duplicate — toggle: close if already open
+				const $existing = this.$bi_dg_modal.find(".ev-dg-map-overlay");
+				if ($existing.length) { $existing.remove(); return; }
+				const src_col = $(e.currentTarget).closest(".ev-dg-node").attr("data-source-col");
+				const pd      = src_col && col_pair_data[src_col];
+				if (!pd) return;
+				const { key_header, col_header, pairs } = pd;
+				const mapped    = pairs.filter(p => p.val);
+				const no_val    = pairs.filter(p => !p.val).length;
+				const rows_html = mapped.map(p =>
+					`<tr><td>${esc(p.key)}</td><td>${esc(p.val)}</td></tr>`
+				).join("");
+				const note_html = no_val
+					? `<div class="ev-dg-map-note">&#9888; ${no_val} ${__("rows have no")} <b>${esc(col_header)}</b> ${__("value — those records will need item groups assigned separately.")}</div>`
+					: "";
+				const $overlay = $(`
+					<div class="ev-dg-map-overlay">
+						<div class="ev-dg-map-panel">
+							<div class="ev-dg-map-hdr">
+								<span class="ev-dg-map-title">${esc(col_header)} ${__("column mapping")}</span>
+								<button class="ev-dg-map-close" aria-label="${__("Close")}">&times;</button>
+							</div>
+							${note_html}
+							<div class="ev-dg-map-body">
+								<table class="ev-dg-map-table">
+									<thead><tr><th>${esc(key_header)}</th><th>${esc(col_header)}</th></tr></thead>
+									<tbody>${rows_html}</tbody>
+								</table>
+							</div>
+						</div>
+					</div>
+				`).appendTo(this.$bi_dg_modal.find(".ev-dg-modal"));
+				$overlay.on("click", (ev) => {
+					if ($(ev.target).is(".ev-dg-map-overlay, .ev-dg-map-close")) $overlay.remove();
+				});
+			})
+			.on("click", ".ev-dg-fix-btn", (e) => {
+				e.stopPropagation();
+				this.$bi_dg_modal.find(".ev-dg-fix-overlay").remove();
+				const $node   = $(e.currentTarget).closest(".ev-dg-node");
+				const src_col = $node.attr("data-source-col");
+				const vs      = this._bi_vs;
+				if (!src_col || !vs) return;
+				const pd = vs.col_pair_data[src_col];
+				if (!pd) return;
+				const dep_node  = nodes.find(n => n.source_col === src_col);
+				const target_dt = dep_node?.id || null;
+				// Build csv_map from pairs that have a value
+				const csv_map = {};
+				pd.pairs.forEach(p => { if (p.key && p.val) csv_map[p.key] = p.val; });
+				const cur_map = {...csv_map, ...(vs.user_edits[src_col] || {})};
+				// ALL items that need this dep: come from the PARENT node's values
+				// e.g. for "Item Group" incomplete node, parent is "Item" which has all 33 item codes
+				const parent_edge = (graph.edges || []).find(eg => eg.from === dep_node?.id);
+				const parent_node = parent_edge ? nodes.find(n => n.id === parent_edge.to) : null;
+				const parent_vals = parent_node?.values || [];
+				// Union: parent node values + pairs keys (covers edge cases where parent node has no values)
+				const known_items = new Set([
+					...parent_vals,
+					...pd.pairs.map(p => p.key).filter(Boolean),
+				]);
+				const _render_fix = (autocomplete_vals) => {
+					const items  = [...known_items].sort();
+					const total  = items.length;
+					const filled = items.filter(i => cur_map[i]).length;
+					const pct    = total ? Math.round(filled / total * 100) : 0;
+					const dl_id  = `ev-dg-dl-${src_col.replace(/\W/g,"")}${Date.now()}`;
+					const dl_html = autocomplete_vals.map(v => `<option value="${esc(v)}">`).join("");
+					const rows_html = items.map((item, i) => {
+						const val        = esc(cur_map[item] || "");
+						const mapped_cls = cur_map[item] ? " ev-dg-fi-mapped" : "";
+						const dot        = cur_map[item]
+							? `<span class="ev-dg-fi-dot ev-dg-fi-dot--on"></span>`
+							: `<span class="ev-dg-fi-dot"></span>`;
+						return `<tr class="ev-dg-fi-row${mapped_cls}" data-row="${i}" data-item="${esc(item)}">
+							<td class="ev-dg-fi-key">${dot}${esc(item)}</td>
+							<td class="ev-dg-fi-val">
+								<input class="ev-dg-fi-input" value="${val}" placeholder="${__("Select or type…")}" list="${dl_id}" autocomplete="off"/>
+								<div class="ev-dg-fi-handle" title="${__("Drag to fill down")}"></div>
+							</td>
+						</tr>`;
+					}).join("");
+					const $ov = $(`
+						<div class="ev-dg-fix-overlay">
+							<div class="ev-dg-fix-panel">
+								<div class="ev-dg-fix-hdr">
+									<div class="ev-dg-fix-hdr-left">
+										<div class="ev-dg-fix-title">${__("Fix data gap")} <span class="ev-dg-fix-col">${esc(pd.col_header || src_col)}</span></div>
+										<div class="ev-dg-fix-sub">${filled}/${total} ${__("mapped")}</div>
+									</div>
+									<button class="ev-dg-fix-close" aria-label="${__("Close")}">×</button>
+								</div>
+								<div class="ev-dg-fix-progress">
+									<div class="ev-dg-fix-progress-bar" style="width:${pct}%"></div>
+								</div>
+								<div class="ev-dg-fix-tip">${__("Drag ↕ handle to fill down. Type or pick from system.")}</div>
+								<div class="ev-dg-fix-body">
+									<datalist id="${dl_id}">${dl_html}</datalist>
+									<table class="ev-dg-fi-table">
+										<thead><tr>
+											<th>${esc(pd.key_header || "Item")}</th>
+											<th>${esc(pd.col_header || src_col)}</th>
+										</tr></thead>
+										<tbody>${rows_html}</tbody>
+									</table>
+								</div>
+								<div class="ev-dg-fix-footer">
+									<span class="ev-dg-fix-foot-count">${total - filled} ${__("remaining")}</span>
+									<div class="ev-dg-fix-foot-btns">
+										<button class="ev-dg-fix-cancel btn btn-sm btn-default">${__("Cancel")}</button>
+										<button class="ev-dg-fix-apply btn btn-sm btn-primary">${__("Apply & Refresh")}</button>
+									</div>
+								</div>
+							</div>
+						</div>
+					`).appendTo(this.$bi_dg_modal.find(".ev-dg-modal"));
+					// ── Drag-to-fill ─────────────────────────────────────────────
+					let _drag = false, _drag_val = "", _drag_from = -1;
+					const $tbody = $ov.find("tbody");
+					$tbody
+						.on("mousedown", ".ev-dg-fi-handle", ev => {
+							ev.preventDefault();
+							_drag = true;
+							_drag_from = +$(ev.currentTarget).closest("tr").attr("data-row");
+							_drag_val  = $(ev.currentTarget).closest("tr").find(".ev-dg-fi-input").val();
+							$ov.find(".ev-dg-fi-table").addClass("ev-dg-fi-dragging");
+						})
+						.on("mouseover", "tr", ev => {
+							if (!_drag) return;
+							const to = +$(ev.currentTarget).attr("data-row");
+							$tbody.find("tr").each(function() {
+								const ri = +$(this).attr("data-row");
+								if (ri > _drag_from && ri <= to)
+									$(this).find(".ev-dg-fi-input").val(_drag_val).closest("tr").addClass("ev-dg-fi-dragged");
+								else if (ri > to)
+									$(this).removeClass("ev-dg-fi-dragged");
+							});
+						});
+					$(document).on("mouseup.ev_fix", () => {
+						_drag = false;
+						$ov.find(".ev-dg-fi-table").removeClass("ev-dg-fi-dragging");
+						$tbody.find(".ev-dg-fi-dragged").each(function() {
+							$(this).removeClass("ev-dg-fi-dragged").addClass("ev-dg-fi-mapped");
+						});
+					});
+					// ── Close ────────────────────────────────────────────────────
+					const _close_fix = () => { $ov.remove(); $(document).off("mouseup.ev_fix"); };
+					$ov.on("click", ".ev-dg-fix-close, .ev-dg-fix-cancel", _close_fix)
+					   .on("click", ev => { if ($(ev.target).is(".ev-dg-fix-overlay")) _close_fix(); });
+					// ── Apply ────────────────────────────────────────────────────
+					$ov.on("click", ".ev-dg-fix-apply", async () => {
+						const edits = {};
+						$ov.find("tr[data-item]").each(function() {
+							const item = $(this).attr("data-item");
+							const val  = $(this).find(".ev-dg-fi-input").val().trim();
+							if (val) edits[item] = val;
+						});
+						vs.user_edits[src_col] = edits;
+						// Rebuild unmapped_cols entry from edits
+						const all_vals = [...new Set(Object.values(edits).filter(Boolean))];
+						vs.unmapped_cols[src_col] = { vals: all_vals, rows_with_value: Object.keys(edits).length };
+						// Also update col_pair_data so View Mapping reflects edits
+						if (vs.col_pair_data[src_col]) {
+							vs.col_pair_data[src_col].pairs = Object.entries(edits).map(([k,v]) => ({key:k, val:v}));
+						}
+						_close_fix();
+						this.$bi_dg_modal?.remove(); this.$bi_dg_modal = null;
+						const $ld = $(`<div class="ev-bi-backdrop"><div class="ev-dg-loading"><div class="ev-dg-spinner"></div><div class="ev-dg-loading-txt">${__("Re-analysing…")}</div></div></div>`).appendTo($("body"));
+						try {
+							const g2 = await frappe.xcall("excel_view.tree_import.analyze_import_deps", {
+								doctype: this.board.doctype,
+								records_json: JSON.stringify(vs.mapped_rows),
+							});
+							$ld.remove();
+							this._bi_render_dep_graph(g2, vs.mapped_rows, vs.rows, vs.headers, vs.fieldnames, vs.col_map, vs.child_col_cfg, vs.col_pair_data);
+						} catch(_) {
+							$ld.remove();
+							frappe.show_alert({message: __("Re-analysis failed."), indicator: "red"}, 4);
+						}
+					});
+				};
+				// Autocomplete: fetch target doctype names once, cache in virtual state
+				if (target_dt && vs.dt_cache[target_dt]) {
+					_render_fix(vs.dt_cache[target_dt]);
+				} else if (target_dt) {
+					frappe.db.get_list(target_dt, {fields:["name"], limit:500, order_by:"name asc"})
+						.then(recs => {
+							vs.dt_cache[target_dt] = recs.map(r => r.name);
+							_render_fix(vs.dt_cache[target_dt]);
+						}).catch(() => _render_fix([]));
+				} else {
+					_render_fix([]);
+				}
+			})
+			.on("click.dg", (e) => {
+				if ($(e.target).hasClass("ev-bi-backdrop")) {
+					this.$bi_dg_modal?.remove(); this.$bi_dg_modal = null;
+				}
+			});
+	}
+
+	/**
+	 * Inspect client-side DocType meta to detect whether this is a tree DocType.
+	 *
+	 * Pattern 1 \u2014 NSM self-referential tree:  meta.is_tree + meta.nsm_parent_field
+	 * Pattern 2 \u2014 Cross-document ref tree:    Table field \u2192 child DocType \u2192 Link back to this doctype
+	 * Returns: {pattern: 1|2, ...info} or {pattern: null}
+	 */
+	_bi_detect_tree_pattern(doctype) {
+		const meta = frappe.get_meta(doctype);
+		if (!meta) return { pattern: null };
+
+		// Pattern 1
+		if (meta.is_tree && meta.nsm_parent_field) {
+			return { pattern: 1, parent_field: meta.nsm_parent_field };
+		}
+
+		// Pattern 2: scan Table fields for a Link back to this doctype in child meta
+		for (const df of (meta.fields || [])) {
+			if (df.fieldtype !== "Table" || !df.options) continue;
+			const child_meta = frappe.get_meta(df.options);
+			if (!child_meta) continue;
+			for (const cdf of (child_meta.fields || [])) {
+				if (cdf.fieldtype === "Link" && cdf.options === doctype) {
+					// Also detect the identity_field: first mandatory non-system Link/Data field
+					// before the first Table field (mirrors tree_import.py _detect_identity_field)
+					let identity_field = null;
+					for (const idf of (meta.fields || [])) {
+						if (idf.fieldtype === "Table") break;
+						if (idf.reqd && !["name","naming_series"].includes(idf.fieldname) &&
+								["Link","Data","Dynamic Link"].includes(idf.fieldtype)) {
+							identity_field = idf.fieldname;
+							break;
+						}
+					}
+					return {
+						pattern      : 2,
+						table_field  : df.fieldname,
+						link_field   : cdf.fieldname,
+						child_doctype: df.options,
+						identity_field,
+					};
+				}
+			}
+		}
+		return { pattern: null };
+	}
+
+	// \u2500\u2500\u2500 GET DATA \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 	_gd_open() {
 		this._gd_target = "new";
+		const is_import = !!this._gd_import_mode;
+		const title     = is_import ? __("Import Records") : __("Get Data");
+		const step2_lbl = is_import ? __("Map Columns")   : __("Configure");
+		const title_icon = is_import
+			? `<svg class="ev-gd-title-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M10 2a1 1 0 0 1 .707.293l4 4a1 1 0 0 1-1.414 1.414L11 5.414V13a1 1 0 1 1-2 0V5.414L6.707 7.707a1 1 0 0 1-1.414-1.414l4-4A1 1 0 0 1 10 2zM4 15a1 1 0 1 0 0 2h12a1 1 0 1 0 0-2H4z"/></svg>`
+			: `<svg class="ev-gd-title-icon" viewBox="0 0 20 20" fill="currentColor"><path d="M3 4a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4zm0 6a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-2zm0 6a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v1a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-1z"/></svg>`;
 		this.$gd_modal = $(`
 			<div class="ev-gd-backdrop">
-				<div class="ev-gd-modal">
+				<div class="ev-gd-modal${is_import ? " ev-gd-modal--import" : ""}">
 					<div class="ev-gd-modal-header">
 						<div class="ev-gd-title-group">
-							<svg class="ev-gd-title-icon" viewBox="0 0 20 20" fill="currentColor">
-								<path d="M3 4a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1V4zm0 6a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v2a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-2zm0 6a1 1 0 0 1 1-1h12a1 1 0 0 1 1 1v1a1 1 0 0 1-1 1H4a1 1 0 0 1-1-1v-1z"/>
-							</svg>
-							<span class="ev-gd-modal-title">${__("Get Data")}</span>
+							${title_icon}
+							<span class="ev-gd-modal-title">${title}</span>
 						</div>
 						<div class="ev-gd-stepper">
 							<div class="ev-gd-step ev-gd-step--active" data-step="1">
@@ -2178,7 +3420,7 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 							<div class="ev-gd-step-line"></div>
 							<div class="ev-gd-step" data-step="2">
 								<div class="ev-gd-step-bubble"><span class="ev-gd-step-num">2</span></div>
-								<span class="ev-gd-step-lbl">${__("Configure")}</span>
+								<span class="ev-gd-step-lbl">${step2_lbl}</span>
 							</div>
 						</div>
 						<button class="ev-gd-close-btn" aria-label="${__("Close")}">
@@ -2186,17 +3428,20 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 						</button>
 					</div>
 					<div class="ev-gd-modal-body"></div>
+					${is_import ? "" : `
 					<div class="ev-gd-modal-footer">
 						<span class="ev-gd-target-lbl">${__("Load into:")}</span>
 						<label class="ev-gd-radio"><input type="radio" name="ev_gd_target" value="new" checked> ${__("New Sheet")}</label>
 						<label class="ev-gd-radio"><input type="radio" name="ev_gd_target" value="current"> ${__("Current Sheet")}</label>
-					</div>
+					</div>`}
 				</div>
 			</div>
 		`).appendTo(document.body);
 		this.$gd_modal.find(".ev-gd-close-btn").on("click", () => this._gd_close());
 		this.$gd_modal.on("click.gd", (e) => { if ($(e.target).hasClass("ev-gd-backdrop")) this._gd_close(); });
-		this.$gd_modal.on("change.gd", "input[name=ev_gd_target]", (e) => { this._gd_target = $(e.currentTarget).val(); });
+		this.$gd_modal.on("change.gd", "input[name=ev_gd_target]", (e) => {
+			this._gd_target = $(e.currentTarget).val();
+		});
 		const $body = this.$gd_modal.find(".ev-gd-modal-body");
 		this._gd_step1($body);
 	}
@@ -2204,13 +3449,14 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 	_gd_close() {
 		this.$gd_modal?.remove();
 		this.$gd_modal = null;
+		this._gd_import_mode = false;
 	}
 
 	_gd_set_step(n) {
-		this.$gd_modal?.find(".ev-gd-step").each(function() {
+		this.$gd_modal?.find(".ev-gd-step").each(function () {
 			const s = parseInt($(this).data("step"));
 			$(this).removeClass("ev-gd-step--active ev-gd-step--done");
-			if (s < n)      $(this).addClass("ev-gd-step--done");
+			if (s < n)       $(this).addClass("ev-gd-step--done");
 			else if (s === n) $(this).addClass("ev-gd-step--active");
 		});
 		this.$gd_modal?.find(".ev-gd-step-line").toggleClass("ev-gd-step-line--done", n > 1);
@@ -2218,7 +3464,7 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 
 	_gd_step1($body) {
 		this._gd_set_step(1);
-		const SOURCES = [
+		const ALL_SOURCES = [
 			{ id: "reports", color: "#1565c0", label: __("From Reports"), sub: __("Frappe standard & custom reports"),
 			  icon: `<svg width="24" height="24" viewBox="0 0 16 16" fill="currentColor"><path d="M1 11a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v3a1 1 0 0 1-1 1H2a1 1 0 0 1-1-1v-3zm5-4a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H7a1 1 0 0 1-1-1V7zm5-5a1 1 0 0 1 1-1h2a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1V2z"/></svg>` },
 			{ id: "gsheets", color: "#2e7d32", label: __("Google Sheets"), sub: __("Public spreadsheet by URL"),
@@ -2232,44 +3478,70 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 			{ id: "webapi",  color: "#00695c", label: __("Web API"),       sub: __("Any REST endpoint"),
 			  icon: `<svg width="24" height="24" viewBox="0 0 16 16" fill="currentColor"><path d="M0 8a8 8 0 1 1 16 0A8 8 0 0 1 0 8zm7.5-6.923c-.67.204-1.335.82-1.887 1.855A7.97 7.97 0 0 0 5.145 4H7.5V1.077zM4.09 4a9.267 9.267 0 0 1 .64-1.539 6.7 6.7 0 0 1 .597-.933A7.025 7.025 0 0 0 2.255 4H4.09zm-.582 3.5c.03-.877.138-1.718.312-2.5H1.674a6.958 6.958 0 0 0-.656 2.5h2.49zM4.847 5a12.5 12.5 0 0 0-.338 2.5H7.5V5H4.847zM8.5 5v2.5h2.99a12.495 12.495 0 0 0-.337-2.5H8.5zM4.51 8.5a12.5 12.5 0 0 0 .337 2.5H7.5V8.5H4.51zm3.99 0V11h2.653c.187-.765.306-1.608.338-2.5H8.5z"/></svg>` },
 		];
-		$body.html(`
-			<div class="ev-gd-step1">
-				<div class="ev-gd-sources-grid">
-					${SOURCES.map(s => `
-						<div class="ev-gd-card" data-src="${s.id}" role="button" tabindex="0">
-							<div class="ev-gd-card-icon-wrap" style="--card-color:${s.color}">
-								${s.icon}
+		const IMPORT_SOURCES = ALL_SOURCES.filter(s => s.id !== "reports");
+		const chevron = `<svg class="ev-gd-isrc-arrow" viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path fill-rule="evenodd" d="M4.646 1.646a.5.5 0 0 1 .708 0l6 6a.5.5 0 0 1 0 .708l-6 6a.5.5 0 0 1-.708-.708L10.293 8 4.646 2.354a.5.5 0 0 1 0-.708z"/></svg>`;
+
+		if (this._gd_import_mode) {
+			$body.html(`
+				<div class="ev-gd-step1 ev-gd-step1--import">
+					<p class="ev-gd-import-hint">
+						${__("Select a file format to import records into")}
+						<span class="ev-gd-import-doctype">${this.board.doctype}</span>
+					</p>
+					<div class="ev-gd-isrc-list">
+						${IMPORT_SOURCES.map(s => `
+							<div class="ev-gd-isrc" data-src="${s.id}" role="button" tabindex="0">
+								<div class="ev-gd-isrc-icon" style="--isrc-color:${s.color}">${s.icon}</div>
+								<div class="ev-gd-isrc-body">
+									<div class="ev-gd-isrc-label">${s.label}</div>
+									<div class="ev-gd-isrc-sub">${s.sub}</div>
+								</div>
+								${chevron}
 							</div>
-							<div class="ev-gd-card-label">${s.label}</div>
-							<div class="ev-gd-card-sub">${s.sub}</div>
-						</div>
-					`).join("")}
+						`).join("")}
+					</div>
 				</div>
-			</div>
-		`);
-		$body.off(".gd")
-			.on("click.gd keypress.gd", ".ev-gd-card", (e) => {
+			`);
+			$body.off(".gd").on("click.gd keypress.gd", ".ev-gd-isrc", (e) => {
 				if (e.type === "keypress" && e.which !== 13) return;
 				this._gd_src($body, $(e.currentTarget).data("src"));
 			});
+		} else {
+			$body.html(`
+				<div class="ev-gd-step1">
+					<div class="ev-gd-sources-grid">
+						${ALL_SOURCES.map(s => `
+							<div class="ev-gd-card" data-src="${s.id}" role="button" tabindex="0">
+								<div class="ev-gd-card-icon-wrap" style="--card-color:${s.color}">${s.icon}</div>
+								<div class="ev-gd-card-label">${s.label}</div>
+								<div class="ev-gd-card-sub">${s.sub}</div>
+							</div>
+						`).join("")}
+					</div>
+				</div>
+			`);
+			$body.off(".gd").on("click.gd keypress.gd", ".ev-gd-card", (e) => {
+				if (e.type === "keypress" && e.which !== 13) return;
+				this._gd_src($body, $(e.currentTarget).data("src"));
+			});
+		}
 	}
-
-
 
 	_gd_src($body, src) {
-		$body.off(".gd");
 		this._gd_set_step(2);
-		({ reports: () => this._gd_reports($body),
-		   gsheets: () => this._gd_gsheets($body),
-		   csv:     () => this._gd_csv($body),
-		   json:    () => this._gd_json($body),
-		   pdf:     () => this._gd_pdf($body),
-		   webapi:  () => this._gd_webapi($body),
+		$body.off(".gd");
+		({
+			reports: () => this._gd_reports($body),
+			gsheets: () => this._gd_gsheets($body),
+			csv:     () => this._gd_csv($body),
+			json:    () => this._gd_json($body),
+			pdf:     () => this._gd_pdf($body),
+			webapi:  () => this._gd_webapi($body),
 		})[src]?.();
-		$body.on("click.gd", ".ev-gd-back", () => { $body.off(".gd"); this._gd_step1($body); });
+		$body.on("click.gd", ".ev-gd-back, .ev-gd-back-btn", () => { $body.off(".gd"); this._gd_step1($body); });
 	}
 
-	_gd_wrap(title, inner) {
+	_gd_wrap(title, inner, footer = "") {
 		return `<div class="ev-gd-step2">
 			<div class="ev-gd-step2-hdr">
 				<button class="ev-gd-back ev-gd-back-btn">
@@ -2279,13 +3551,14 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 				<span class="ev-gd-step2-title">${title}</span>
 			</div>
 			<div class="ev-gd-step2-body">${inner}</div>
+			${footer ? `<div class="ev-gd-step2-footer">${footer}</div>` : ""}
 		</div>`;
 	}
 
 	_gd_preview_tbl(headers, rows) {
 		const sample = rows.slice(0, 5);
 		return `<div class="ev-gd-preview">
-			<div class="ev-gd-preview-lbl">${__("Preview")} — ${rows.length} ${__("rows")}</div>
+			<div class="ev-gd-preview-lbl">${__("Preview")} \u2014 ${rows.length} ${__("rows")}</div>
 			<div class="ev-gd-preview-scroll"><table class="ev-gd-ptbl">
 				<thead><tr>${headers.map(h => `<th>${frappe.utils.escape_html(String(h))}</th>`).join("")}</tr></thead>
 				<tbody>${sample.map(r => `<tr>${r.map(v => `<td>${frappe.utils.escape_html(String(v ?? ""))}</td>`).join("")}</tr>`).join("")}</tbody>
@@ -2293,54 +3566,45 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		</div>`;
 	}
 
-	// ── Reports ───────────────────────────────────────────────────────────────
+	// \u2500\u2500 Reports \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500
 
 	_gd_reports($body) {
 		const doctype = this.board.doctype;
+		const esc     = frappe.utils.escape_html;
 		$body.html(this._gd_wrap(__("From Reports"), `
 			<div class="ev-gd-reports-split">
 				<div class="ev-gd-rpt-left">
-					<div class="ev-gd-rpt-left-hdr">
-						<span class="ev-gd-section-lbl">${__("Reports")} <span class="ev-gd-dt-badge">${frappe.utils.escape_html(doctype)}</span></span>
+					<div class="ev-gd-info" style="margin-bottom:8px">
+						\ud83d\udcc8 ${__("Reports for")} <strong>${esc(doctype)}</strong>
 					</div>
-					<div class="ev-gd-search-wrap">
-						<svg class="ev-gd-search-icon" viewBox="0 0 16 16" fill="currentColor" width="13" height="13"><path d="M11.742 10.344a6.5 6.5 0 1 0-1.397 1.398h-.001c.03.04.062.078.098.115l3.85 3.85a1 1 0 0 0 1.415-1.414l-3.85-3.85a1.007 1.007 0 0 0-.115-.099zm-5.242 1.656a5.5 5.5 0 1 1 0-11 5.5 5.5 0 0 1 0 11z"/></svg>
-						<input type="text" class="ev-gd-report-search ev-gd-search-input" placeholder="${__("Search reports…")}">
-					</div>
-					<div class="ev-gd-report-list ev-gd-loading">
-						<div class="ev-gd-loading-dots"><span></span><span></span><span></span></div>
-					</div>
+					<input type="text" class="form-control ev-gd-report-search" placeholder="${__("Search reports\u2026")}" style="margin-bottom:8px" autocomplete="off">
+					<div class="ev-gd-report-list ev-gd-loading">${__("Loading\u2026")}</div>
 				</div>
 				<div class="ev-gd-rpt-right">
-					<div class="ev-gd-rpt-right-placeholder">
-						<svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="1.5" width="40" height="40" opacity=".25"><rect x="8" y="6" width="32" height="36" rx="3"/><line x1="14" y1="16" x2="34" y2="16"/><line x1="14" y1="22" x2="34" y2="22"/><line x1="14" y1="28" x2="26" y2="28"/></svg>
-						<p>${__("Select a report to configure filters")}</p>
-					</div>
+					<div class="ev-gd-rpt-right-placeholder">${__("Select a report to configure filters.")}</div>
 					<div class="ev-gd-filters-wrap hide">
 						<div class="ev-gd-rpt-filter-hdr">
-							<span class="ev-gd-section-lbl">${__("Filters")} — <strong class="ev-gd-report-sel-name"></strong></span>
-							<span class="ev-gd-filter-loading ev-gd-filter-loading-txt"></span>
+							<span>${__("Filters for")} <strong class="ev-gd-report-sel-name"></strong></span>
+							<span class="ev-gd-filter-loading text-muted" style="font-size:11px"></span>
 						</div>
 						<div class="ev-gd-rpt-filter-rows"></div>
 					</div>
-					<div class="ev-gd-preview-area"></div>
 					<div class="ev-gd-actions hide">
-						<button class="ev-gd-preview-btn btn btn-sm btn-default" disabled>${__("Preview")}</button>
-						<button class="ev-gd-load-btn btn btn-sm btn-primary" disabled>${__("Load →")}</button>
+						<button class="ev-gd-btn ev-gd-btn--secondary ev-gd-preview-btn" disabled>${__("Preview")}</button>
+						<button class="ev-gd-btn ev-gd-btn--primary ev-gd-load-btn" disabled>${__("Load \u2192")}</button>
 					</div>
+					<div class="ev-gd-preview-area"></div>
 				</div>
 			</div>
 		`));
-		let _all = [], _sel = null, _res = null, _filter_defs = [];
 
-		const _filter_row = (f) => this._gd_filter_row(f);
+		let _all = [], _sel = null, _res = null, _filter_defs = [];
 		const _get_filters = () => this._gd_collect_filters($body);
 
-		/** Fetch report JS via get_script, eval in global scope, read frappe.query_reports[name].filters */
 		const _load_filters = (report_name) => {
 			const $rows = $body.find(".ev-gd-rpt-filter-rows");
-			const $lbl  = $body.find(".ev-gd-filter-loading-txt");
-			$rows.html(""); $lbl.text(__("Loading filters…"));
+			const $lbl  = $body.find(".ev-gd-filter-loading");
+			$rows.html(""); $lbl.text(__("Loading filters\u2026"));
 			frappe.call({
 				method: "frappe.desk.query_report.get_script",
 				args: { report_name },
@@ -2350,34 +3614,30 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 					try {
 						if (!frappe.query_reports) frappe.query_reports = {};
 						const script = r.message?.script || (typeof r.message === "string" ? r.message : "");
-						if (script) { (0, eval)(script); }
+						if (script) (0, eval)(script);
 						filters = (frappe.query_reports?.[report_name]?.filters || []).filter(f => f && f.fieldname);
-					} catch (e) {
-						console.warn("[GetData] report filter eval error:", e);
-					}
+					} catch (e) { /* silent */ }
 					_filter_defs = filters;
-					if (!filters.length) {
-						$rows.html(`<div class="ev-gd-empty">${__("No filters for this report.")}</div>`);
-						return;
-					}
-					$rows.html(filters.map(_filter_row).join(""));
+					$rows.html(filters.length
+						? filters.map(f => this._gd_filter_row(f)).join("")
+						: `<div class="ev-gd-empty" style="padding:10px 0">${__("This report has no filters.")}</div>`);
 				},
 			});
 		};
 
 		frappe.call({
 			method: "frappe.client.get_list",
-			args: { doctype: "Report", fields: ["name", "report_type", "ref_doctype"], filters: [["ref_doctype", "=", doctype]], limit: 500, order_by: "modified desc" },
+			args: { doctype: "Report", fields: ["name","report_type","ref_doctype"], filters: [["ref_doctype","=",doctype]], limit: 500, order_by: "modified desc" },
 			callback: (r) => {
 				_all = r.message || [];
 				const render = (list) => {
 					const $l = $body.find(".ev-gd-report-list").removeClass("ev-gd-loading");
 					$l.html(list.length
-						? list.map(x => `<div class="ev-gd-report-item" data-name="${frappe.utils.escape_html(x.name)}">
-								<div class="ev-gd-report-name">${frappe.utils.escape_html(x.name)}</div>
-								<div class="ev-gd-report-type-badge">${frappe.utils.escape_html(x.report_type || "")}</div>
+						? list.map(x => `<div class="ev-gd-report-item" data-name="${esc(x.name)}">
+								<div class="ev-gd-report-name">${esc(x.name)}</div>
+								<div class="ev-gd-report-meta">${esc(x.report_type || "")}</div>
 							</div>`).join("")
-						: `<div class="ev-gd-empty">${__("No reports found for")} <strong>${frappe.utils.escape_html(doctype)}</strong></div>`);
+						: `<div class="ev-gd-empty">${__("No reports found for")} <strong>${esc(doctype)}</strong></div>`);
 				};
 				render(_all);
 				$body.on("input.gd", ".ev-gd-report-search", (e) => {
@@ -2402,7 +3662,7 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 			frappe.call({
 				method: "frappe.desk.query_report.run",
 				args: { report_name: _sel, filters: _get_filters(), ignore_prepared_report: 1 },
-				freeze: true, freeze_message: __("Running report…"),
+				freeze: true, freeze_message: __("Running report\u2026"),
 				callback: (r) => { _res = r.message; cb?.(_res); },
 			});
 		};
@@ -2414,13 +3674,14 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		}));
 		$body.on("click.gd", ".ev-gd-load-btn", () => {
 			const go = (res) => {
-				const raw = res.columns || [];
+				const raw  = res.columns || [];
 				const cols = raw.map(c => typeof c === "string" ? { label: c, fieldname: c } : c);
 				const headers = cols.map(c => c.label || c.fieldname);
-				const keys = cols.map(c => c.fieldname || c.label);
-				const rows = (res.result || []).filter(r => !r.is_subtotal && !r.is_total)
+				const keys    = cols.map(c => c.fieldname || c.label);
+				const rows    = (res.result || []).filter(r => !r.is_subtotal && !r.is_total)
 					.map(r => keys.map((k, i) => Array.isArray(r) ? r[i] : (r[k] ?? "")));
-				this._gd_load(headers, rows, _sel, { name: _sel, filter_defs: _filter_defs, current_filters: _get_filters() }, keys); this._gd_close();
+				this._gd_load(headers, rows, _sel, { name: _sel, filter_defs: _filter_defs, current_filters: _get_filters() }, keys);
+				this._gd_close();
 			};
 			_res ? go(_res) : _run(go);
 		});
@@ -2432,18 +3693,19 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		$body.html(this._gd_wrap(__("Google Sheets"), `
 			<div class="ev-gd-field-row">
 				<label class="ev-gd-lbl">${__("Spreadsheet URL")}</label>
-				<input type="text" class="form-control ev-gd-gs-url" placeholder="https://docs.google.com/spreadsheets/d/…">
+				<input type="text" class="form-control ev-gd-gs-url" placeholder="https://docs.google.com/spreadsheets/d/…" autocomplete="off">
 			</div>
 			<div class="ev-gd-field-row">
-				<label class="ev-gd-lbl">${__("Sheet / Tab name")} <span class="text-muted">(${__("optional")})</span></label>
+				<label class="ev-gd-lbl">${__("Sheet / Tab Name")} <span class="ev-gd-lbl-opt">${__("optional")}</span></label>
 				<input type="text" class="form-control ev-gd-gs-tab" placeholder="Sheet1">
 			</div>
-			<div class="ev-gd-info">ℹ ${__('Sheet must be set to "Anyone with link can view".')}</div>
-			<div class="ev-gd-actions">
-				<button class="btn btn-sm btn-default ev-gd-preview-btn">${__("Preview")}</button>
-				<button class="btn btn-sm btn-primary ev-gd-load-btn">${__("Load →")}</button>
+			<div class="ev-gd-info">
+				<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.47l-.451-.081.082-.381 2.29-.287zM8 5.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"/></svg>
+				<span>${__('Set sharing to "Anyone with link can view" before pasting the URL.')}</span>
 			</div>
-			<div class="ev-gd-preview-area"></div>
+		`, `
+			<button class="ev-gd-btn ev-gd-btn--secondary ev-gd-preview-btn">${__("Preview")}</button>
+			<button class="ev-gd-btn ev-gd-btn--primary ev-gd-load-btn">${__("Load")}</button>
 		`));
 		let _h = [], _r = [];
 		const _fetch = (cb) => {
@@ -2467,30 +3729,44 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 	// ── CSV ───────────────────────────────────────────────────────────────────
 
 	_gd_csv($body) {
+		const _dz_inner = () => `
+			<div class="ev-gd-drop-icon">
+				<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" width="36" height="36"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><line x1="16" y1="13" x2="8" y2="13"/><line x1="16" y1="17" x2="8" y2="17"/><polyline points="10 9 9 9 8 9"/></svg>
+			</div>
+			<div class="ev-gd-dz-label">${__("Drop file here or")} <span class="ev-gd-browse">${__("browse")}</span></div>
+			<div class="ev-gd-dz-sub">.csv · .tsv · .txt</div>
+			<input type="file" accept=".csv,.tsv,.txt" class="ev-gd-file-in" style="display:none">`;
+
 		$body.html(this._gd_wrap(__("CSV"), `
-			<div class="ev-gd-dropzone ev-gd-drop-csv">
-				<div class="ev-gd-drop-icon">📄</div>
-				<div>${__("Drop CSV here or")} <span class="ev-gd-browse">${__("browse")}</span></div>
-				<input type="file" accept=".csv,.tsv,.txt" class="ev-gd-file-in" style="display:none">
+			<div class="ev-gd-two-col">
+				<div class="ev-gd-col-drop">
+					<div class="ev-gd-dropzone ev-gd-drop-csv">${_dz_inner()}</div>
+				</div>
+				<div class="ev-gd-col-form">
+					<div class="ev-gd-field-row">
+						<label class="ev-gd-lbl">${__("Or paste a URL")}</label>
+						<input type="text" class="form-control ev-gd-url-in" placeholder="https://example.com/data.csv" autocomplete="off">
+					</div>
+					<div class="ev-gd-two-col-sep"></div>
+					<div class="ev-gd-field-row">
+						<label class="ev-gd-lbl">${__("Delimiter")}</label>
+						<select class="ev-gd-sel ev-gd-delim">
+							<option value="auto">${__("Auto-detect")}</option>
+							<option value=",">, (comma)</option>
+							<option value=";">; (semicolon)</option>
+							<option value="\t">${__("Tab")}</option>
+							<option value="|">| (pipe)</option>
+						</select>
+					</div>
+					<label class="ev-gd-checkbox-row">
+						<input type="checkbox" class="ev-gd-has-hdr" checked>
+						${__("First row is header")}
+					</label>
+				</div>
 			</div>
-			<div class="ev-gd-or-sep"><span>${__("or")}</span></div>
-			<div class="ev-gd-field-row">
-				<input type="text" class="form-control ev-gd-url-in" placeholder="${__("Paste URL to CSV file")}">
-			</div>
-			<div class="ev-gd-opts-row">
-				<label class="ev-gd-lbl" style="width:auto;margin:0">${__("Delimiter:")}</label>
-				<select class="ev-gd-sel ev-gd-delim">
-					<option value="auto">${__("Auto")}</option>
-					<option value=",">,</option><option value=";">;</option>
-					<option value="\t">${__("Tab")}</option><option value="|">|</option>
-				</select>
-				<label class="ev-gd-radio" style="margin-left:10px"><input type="checkbox" class="ev-gd-has-hdr" checked> ${__("First row as header")}</label>
-			</div>
-			<div class="ev-gd-actions">
-				<button class="btn btn-sm btn-default ev-gd-preview-btn">${__("Preview")}</button>
-				<button class="btn btn-sm btn-primary ev-gd-load-btn">${__("Load →")}</button>
-			</div>
-			<div class="ev-gd-preview-area"></div>
+		`, `
+			<button class="ev-gd-btn ev-gd-btn--secondary ev-gd-preview-btn">${__("Preview")}</button>
+			<button class="ev-gd-btn ev-gd-btn--primary ev-gd-load-btn">${__("Load")}</button>
 		`));
 		let _h = [], _r = [];
 		const _parse = (text) => {
@@ -2500,19 +3776,42 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 			_h = all.length ? (has_hdr ? all[0] : all[0].map((_, i) => `Col${i + 1}`)) : [];
 			_r = has_hdr ? all.slice(1) : all;
 		};
+		const _set_file = (fname, read_fn) => {
+			const esc = frappe.utils.escape_html;
+			$body.find(".ev-gd-drop-csv")
+				.addClass("ev-gd-dropzone--loaded")
+				.html(`<span class="ev-gd-file-chip">
+					<span class="ev-gd-file-chip-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>
+					<span class="ev-gd-file-chip-name">${esc(fname)}</span>
+					<button class="ev-gd-file-chip-clear" title="${__("Clear")}">
+						<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
+					</button>
+				</span>`);
+			read_fn();
+		};
+		$body.on("click.gd", ".ev-gd-file-chip-clear", () => {
+			$body.find(".ev-gd-drop-csv")
+				.removeClass("ev-gd-dropzone--loaded")
+				.html(_dz_inner());
+			$body.find(".ev-gd-preview-area").empty();
+			_h = []; _r = [];
+		});
 		$body.on("click.gd", ".ev-gd-browse", () => $body.find(".ev-gd-file-in").click());
 		$body.on("change.gd", ".ev-gd-file-in", (e) => {
 			const f = e.target.files[0]; if (!f) return;
-			$body.find(".ev-gd-drop-csv .ev-gd-drop-icon").text("📄 " + f.name);
-			const rd = new FileReader(); rd.onload = (ev) => { _parse(ev.target.result); $body.find(".ev-gd-preview-area").html(this._gd_preview_tbl(_h, _r)); };
-			rd.readAsText(f);
+			_set_file(f.name, () => {
+				const rd = new FileReader(); rd.onload = (ev) => { _parse(ev.target.result); $body.find(".ev-gd-preview-area").html(this._gd_preview_tbl(_h, _r)); };
+				rd.readAsText(f);
+			});
 		});
 		$body.on("dragover.gd", ".ev-gd-drop-csv", (e) => { e.preventDefault(); $(e.currentTarget).addClass("ev-gd-over"); });
 		$body.on("dragleave.gd drop.gd", ".ev-gd-drop-csv", (e) => { e.preventDefault(); $(e.currentTarget).removeClass("ev-gd-over"); });
 		$body.on("drop.gd", ".ev-gd-drop-csv", (e) => {
 			const f = e.originalEvent.dataTransfer.files[0]; if (!f) return;
-			const rd = new FileReader(); rd.onload = (ev) => { _parse(ev.target.result); $body.find(".ev-gd-preview-area").html(this._gd_preview_tbl(_h, _r)); };
-			rd.readAsText(f);
+			_set_file(f.name, () => {
+				const rd = new FileReader(); rd.onload = (ev) => { _parse(ev.target.result); $body.find(".ev-gd-preview-area").html(this._gd_preview_tbl(_h, _r)); };
+				rd.readAsText(f);
+			});
 		});
 		$body.on("click.gd", ".ev-gd-preview-btn", () => {
 			const url = $body.find(".ev-gd-url-in").val().trim();
@@ -2533,24 +3832,32 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 
 	_gd_json($body) {
 		$body.html(this._gd_wrap(__("JSON"), `
-			<div class="ev-gd-dropzone ev-gd-drop-json">
-				<div class="ev-gd-drop-icon">{ }</div>
-				<div>${__("Drop JSON file here or")} <span class="ev-gd-browse">${__("browse")}</span></div>
-				<input type="file" accept=".json" class="ev-gd-file-in" style="display:none">
+			<div class="ev-gd-two-col">
+				<div class="ev-gd-col-drop">
+					<div class="ev-gd-dropzone ev-gd-drop-json">
+						<div class="ev-gd-drop-icon">
+							<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" width="36" height="36"><polyline points="16 18 22 12 16 6"/><polyline points="8 6 2 12 8 18"/></svg>
+						</div>
+						<div class="ev-gd-dz-label">${__("Drop file here or")} <span class="ev-gd-browse">${__("browse")}</span></div>
+						<div class="ev-gd-dz-sub">.json</div>
+						<input type="file" accept=".json" class="ev-gd-file-in" style="display:none">
+					</div>
+				</div>
+				<div class="ev-gd-col-form">
+					<div class="ev-gd-field-row">
+						<label class="ev-gd-lbl">${__("Or paste a URL")}</label>
+						<input type="text" class="form-control ev-gd-url-in" placeholder="https://api.example.com/data.json" autocomplete="off">
+					</div>
+					<div class="ev-gd-two-col-sep"></div>
+					<div class="ev-gd-field-row">
+						<label class="ev-gd-lbl">${__("JSON Path")} <span class="ev-gd-lbl-opt">${__("blank for root array")}</span></label>
+						<input type="text" class="form-control ev-gd-json-path" placeholder="data.items">
+					</div>
+				</div>
 			</div>
-			<div class="ev-gd-or-sep"><span>${__("or")}</span></div>
-			<div class="ev-gd-field-row">
-				<input type="text" class="form-control ev-gd-url-in" placeholder="${__("Paste URL to JSON endpoint")}">
-			</div>
-			<div class="ev-gd-field-row">
-				<label class="ev-gd-lbl">${__("JSON Path")} <span class="text-muted">(${__("e.g. data.items — leave blank for root array")})</span></label>
-				<input type="text" class="form-control ev-gd-json-path" placeholder="data.items">
-			</div>
-			<div class="ev-gd-actions">
-				<button class="btn btn-sm btn-default ev-gd-preview-btn">${__("Preview")}</button>
-				<button class="btn btn-sm btn-primary ev-gd-load-btn">${__("Load →")}</button>
-			</div>
-			<div class="ev-gd-preview-area"></div>
+		`, `
+			<button class="ev-gd-btn ev-gd-btn--secondary ev-gd-preview-btn">${__("Preview")}</button>
+			<button class="ev-gd-btn ev-gd-btn--primary ev-gd-load-btn">${__("Load")}</button>
 		`));
 		let _h = [], _r = [];
 		const _parse = (text) => {
@@ -2589,25 +3896,36 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 	_gd_pdf($body) {
 		$body.html(this._gd_wrap(__("PDF"), `
 			<div class="ev-gd-dropzone ev-gd-drop-pdf">
-				<div class="ev-gd-drop-icon">📕</div>
-				<div>${__("Drop PDF here or")} <span class="ev-gd-browse">${__("browse")}</span></div>
+				<div class="ev-gd-drop-icon">
+					<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round" width="36" height="36"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/><path d="M9.5 12.5h1a1 1 0 0 1 0 2h-1v-2zm0 0V15m2.5-2.5h1.25a1.25 1.25 0 1 1 0 2.5H12V12.5zm3.5 0v2.5"/></svg>
+				</div>
+				<div class="ev-gd-dz-label">${__("Drop PDF here or")} <span class="ev-gd-browse">${__("browse")}</span></div>
+				<div class="ev-gd-dz-sub">.pdf</div>
 				<input type="file" accept=".pdf" class="ev-gd-file-in" style="display:none">
 			</div>
-			<div class="ev-gd-info">ℹ ${__("Tables are extracted automatically. Works best with structured PDF grids.")}</div>
+			<div class="ev-gd-info">
+				<svg viewBox="0 0 16 16" fill="currentColor" width="14" height="14"><path d="M8 16A8 8 0 1 0 8 0a8 8 0 0 0 0 16zm.93-9.412-1 4.705c-.07.34.029.533.304.533.194 0 .487-.07.686-.246l-.088.416c-.287.346-.92.598-1.465.598-.703 0-1.002-.422-.808-1.319l.738-3.468c.064-.293.006-.399-.287-.47l-.451-.081.082-.381 2.29-.287zM8 5.5a1 1 0 1 1 0-2 1 1 0 0 1 0 2z"/></svg>
+				<span>${__("Tables are extracted automatically. Works best with structured PDF grids.")}</span>
+			</div>
 			<div class="ev-gd-field-row hide ev-gd-tbl-sel-row">
-				<label class="ev-gd-lbl" style="width:auto;margin:0">${__("Table:")}</label>
-				<select class="ev-gd-sel ev-gd-tbl-sel"></select>
+				<label class="ev-gd-lbl">${__("Table")}</label>
+				<select class="ev-gd-sel ev-gd-tbl-sel ev-gd-tbl-sel-input"></select>
 			</div>
-			<div class="ev-gd-actions">
-				<button class="btn btn-sm btn-primary ev-gd-load-btn" disabled>${__("Load →")}</button>
-			</div>
-			<div class="ev-gd-preview-area"></div>
+		`, `
+			<button class="ev-gd-btn ev-gd-btn--primary ev-gd-load-btn" disabled>${__("Load")}</button>
 		`));
 		let _tables = [];
 		$body.on("click.gd", ".ev-gd-browse", () => $body.find(".ev-gd-file-in").click());
 		$body.on("change.gd", ".ev-gd-file-in", (e) => {
 			const f = e.target.files[0]; if (!f) return;
-			$body.find(".ev-gd-drop-pdf .ev-gd-drop-icon").text("📕 " + f.name);
+			$body.find(".ev-gd-drop-pdf").addClass("ev-gd-dropzone--loaded").html(`
+				<span class="ev-gd-file-chip">
+					<span class="ev-gd-file-chip-icon"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" width="18" height="18"><path d="M14 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V8z"/><polyline points="14 2 14 8 20 8"/></svg></span>
+					<span class="ev-gd-file-chip-name">${frappe.utils.escape_html(f.name)}</span>
+				</span>
+			`);
+			// re-bind the file input after DOM replacement
+			const inp2 = document.createElement("input"); inp2.type = "file"; inp2.accept = ".pdf"; inp2.className = "ev-gd-file-in"; inp2.style.display = "none"; $body.find(".ev-gd-drop-pdf")[0].appendChild(inp2);
 			const rd = new FileReader();
 			rd.onload = (ev) => {
 				frappe.call({
@@ -2641,33 +3959,42 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 
 	_gd_webapi($body) {
 		$body.html(this._gd_wrap(__("Web API"), `
-			<div class="ev-gd-url-row">
-				<select class="ev-gd-sel ev-gd-method" style="width:76px;flex-shrink:0">
-					<option>GET</option><option>POST</option>
-				</select>
-				<input type="text" class="form-control ev-gd-url-in" placeholder="https://api.example.com/data" style="flex:1;margin-left:6px">
-			</div>
-			<div class="ev-gd-field-row" style="flex-direction:column;align-items:flex-start">
-				<label class="ev-gd-lbl">${__("Headers")} <button class="btn btn-xs btn-default ev-gd-add-hdr" style="margin-left:6px">+ ${__("Add")}</button></label>
-				<div class="ev-gd-hdrs-list" style="width:100%"></div>
+			<div class="ev-gd-field-row">
+				<label class="ev-gd-lbl">${__("Endpoint")}</label>
+				<div class="ev-gd-api-url-row">
+					<select class="ev-gd-sel ev-gd-method ev-gd-api-method">
+						<option>GET</option><option>POST</option>
+					</select>
+					<input type="text" class="form-control ev-gd-url-in ev-gd-api-url-in" placeholder="https://api.example.com/data" autocomplete="off">
+				</div>
 			</div>
 			<div class="ev-gd-field-row">
-				<label class="ev-gd-lbl">${__("JSON Path")} <span class="text-muted">(${__("e.g. data.results — leave blank for root array")})</span></label>
+				<div class="ev-gd-api-hdrs-hdr">
+					<label class="ev-gd-lbl ev-gd-lbl--inline">${__("Headers")}</label>
+					<button class="ev-gd-btn ev-gd-btn--ghost ev-gd-add-hdr">
+						<svg viewBox="0 0 16 16" fill="currentColor" width="11" height="11"><path d="M8 2a.5.5 0 0 1 .5.5v5h5a.5.5 0 0 1 0 1h-5v5a.5.5 0 0 1-1 0v-5h-5a.5.5 0 0 1 0-1h5v-5A.5.5 0 0 1 8 2z"/></svg>
+						${__("Add header")}
+					</button>
+				</div>
+				<div class="ev-gd-hdrs-list"></div>
+			</div>
+			<div class="ev-gd-field-row">
+				<label class="ev-gd-lbl">${__("JSON Path")} <span class="ev-gd-lbl-opt">${__("e.g. data.results — blank for root array")}</span></label>
 				<input type="text" class="form-control ev-gd-json-path" placeholder="data">
 			</div>
-			<div class="ev-gd-actions">
-				<button class="btn btn-sm btn-default ev-gd-preview-btn">${__("Test & Preview")}</button>
-				<button class="btn btn-sm btn-primary ev-gd-load-btn">${__("Load →")}</button>
-			</div>
-			<div class="ev-gd-preview-area"></div>
+		`, `
+			<button class="ev-gd-btn ev-gd-btn--secondary ev-gd-preview-btn">${__("Test & Preview")}</button>
+			<button class="ev-gd-btn ev-gd-btn--primary ev-gd-load-btn">${__("Load")}</button>
 		`));
 		let _h = [], _r = [];
 		$body.on("click.gd", ".ev-gd-add-hdr", () => {
 			$body.find(".ev-gd-hdrs-list").append(`
 				<div class="ev-gd-hdr-row">
-					<input type="text" class="form-control ev-gd-hk" placeholder="${__("Name")}" style="width:140px">
-					<input type="text" class="form-control ev-gd-hv" placeholder="${__("Value")}" style="flex:1;margin:0 6px">
-					<button class="btn btn-xs btn-danger ev-gd-del-hdr">✕</button>
+					<input type="text" class="form-control ev-gd-hk ev-gd-hdr-key" placeholder="${__("Header name")}">
+					<input type="text" class="form-control ev-gd-hv ev-gd-hdr-val" placeholder="${__("Value")}">
+					<button class="ev-gd-btn ev-gd-btn--danger-ghost ev-gd-del-hdr" title="${__("Remove")}">
+						<svg viewBox="0 0 16 16" fill="currentColor" width="12" height="12"><path d="M4.646 4.646a.5.5 0 0 1 .708 0L8 7.293l2.646-2.647a.5.5 0 0 1 .708.708L8.707 8l2.647 2.646a.5.5 0 0 1-.708.708L8 8.707l-2.646 2.647a.5.5 0 0 1-.708-.708L7.293 8 4.646 5.354a.5.5 0 0 1 0-.708z"/></svg>
+					</button>
 				</div>`);
 		});
 		$body.on("click.gd", ".ev-gd-del-hdr", (e) => $(e.currentTarget).closest(".ev-gd-hdr-row").remove());
@@ -2696,6 +4023,13 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 	// ── Shared load + utilities ───────────────────────────────────────────────
 
 	_gd_load(headers, rows, label, report_meta = null, fieldnames = null) {
+		// Bulk Import mode: intercept and open Column Mapper instead of creating a new sheet
+		if (this._gd_import_mode) {
+			this._gd_import_mode = false;
+			this._open_bulk_import_mapper(headers, rows, fieldnames);
+			return;
+		}
+
 		// Use actual fieldnames as data keys when available (fixes Smart Lookup matching)
 		const keys = fieldnames || headers.map((_, i) => String(i));
 		const col_configs = headers.map((h, i) => ({

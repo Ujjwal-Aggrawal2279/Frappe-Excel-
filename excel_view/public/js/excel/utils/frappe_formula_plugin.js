@@ -72,6 +72,13 @@ class AsyncFormulaManager {
 		this._ERR_COOLDOWN = errCooldown;
 		this._batch_timer  = null;
 
+		// ── Aggregate batch queue (coalesces all FRAPPE_SUM/COUNT/AVG/MAX/MIN
+		//    calls that fire in the same synchronous HF evaluation tick into a
+		//    single frappe_aggregate_batch HTTP request) ───────────────────────
+		/** @type {Map<string, Object>}  cacheKey → query args dict */
+		this._agg_queue           = new Map();
+		this._agg_flush_scheduled = false;
+
 		// ── Period state (used by PERIOD_START / PERIOD_END formula functions) ──
 		this._period = this._compute_period("this_month");
 	}
@@ -138,6 +145,8 @@ class AsyncFormulaManager {
 		// Wipe all cached values — period change affects every FRAPPE_SUM with date filters
 		this._cache.clear();
 		this._pending.clear();
+		this._agg_queue.clear();
+		this._agg_flush_scheduled = false;
 		if (this._rerender) this._rerender();
 	}
 
@@ -204,6 +213,47 @@ class AsyncFormulaManager {
 	}
 
 	/**
+	 * Enqueue an aggregate query for the next micro-task batch flush.
+	 *
+	 * All FRAPPE_SUM/COUNT/AVG/MAX/MIN calls made during a single synchronous
+	 * HyperFormula evaluation tick are collected here.  A single
+	 * `Promise.resolve().then(flush)` microtask fires after all HF cells have
+	 * been evaluated, coalescing N calls into one HTTP request.
+	 *
+	 * @param {string} cacheKey  Deterministic key (same as in getOrFetch).
+	 * @param {Object} args      Query descriptor sent to frappe_aggregate_batch.
+	 * @param {{sheet,row,col}}  addr  HF cell address for re-eval tracking.
+	 * @returns {*}  Cached value, "#LOADING…", or an error sentinel.
+	 */
+	batch_aggregate(cacheKey, args, addr) {
+		const entry = this._cache.get(cacheKey);
+		const now   = Date.now();
+
+		if (entry) {
+			const age = now - entry.ts;
+			if (entry.status === "ok"    && age < this._TTL)          return entry.data;
+			if (entry.status === "loading")                            { this._track(cacheKey, addr); return "#LOADING\u2026"; }
+			if (entry.status === "error" && age < this._ERR_COOLDOWN) return entry.data;
+		}
+
+		// Cache miss / expired — enqueue
+		this._cache.set(cacheKey, { status: "loading", ts: now });
+		this._track(cacheKey, addr);
+
+		if (!this._agg_queue.has(cacheKey)) {
+			this._agg_queue.set(cacheKey, args);
+		}
+
+		if (!this._agg_flush_scheduled) {
+			this._agg_flush_scheduled = true;
+			// Microtask: fires after all synchronous HF evaluations complete
+			Promise.resolve().then(() => this._flush_agg_batch());
+		}
+
+		return "#LOADING\u2026";
+	}
+
+	/**
 	 * Invalidate all cache entries whose key starts with *prefix*.
 	 * Useful when a document is saved and cached values may be stale.
 	 *
@@ -219,6 +269,8 @@ class AsyncFormulaManager {
 	clear() {
 		this._cache.clear();
 		this._pending.clear();
+		this._agg_queue.clear();
+		this._agg_flush_scheduled = false;
 	}
 
 	// ── Private ───────────────────────────────────────────────────────────────
@@ -248,6 +300,55 @@ class AsyncFormulaManager {
 			this._batch_timer = null;
 			this._flush_pending();
 		}, 50);
+	}
+
+	/**
+	 * Fire one frappe.call for all queued aggregate queries and populate the
+	 * cache with the batch results.  Called as a microtask after each HF
+	 * evaluation tick — by that point every formula cell in the sheet has
+	 * already called batch_aggregate(), so the queue is complete.
+	 */
+	_flush_agg_batch() {
+		this._agg_flush_scheduled = false;
+		if (!this._agg_queue.size) return;
+
+		const keys    = [];
+		const queries = [];
+		for (const [key, args] of this._agg_queue) {
+			keys.push(key);
+			queries.push(args);
+		}
+		this._agg_queue.clear();
+
+		Promise.resolve(
+			frappe.call({
+				method: "excel_view.api.frappe_aggregate_batch",
+				args:   { queries: JSON.stringify(queries) },
+			}),
+		)
+			.then((r) => {
+				const results = r.message?.results ?? [];
+				const ts = Date.now();
+				keys.forEach((key, i) => {
+					const val = results[i];
+					this._cache.set(key, {
+						status: "ok",
+						data:   val ?? 0,
+						ts,
+					});
+				});
+			})
+			.catch((err) => {
+				const msg      = String(err?.exc_type ?? err?.message ?? "");
+				const sentinel = msg.includes("PermissionError") ? "#PERM_DENIED" : "#ERR!";
+				const ts = Date.now();
+				keys.forEach((key) => {
+					this._cache.set(key, { status: "error", data: sentinel, ts });
+				});
+			})
+			.finally(() => {
+				this._schedule_reeval("_batch");
+			});
 	}
 
 	/**
@@ -342,15 +443,10 @@ class FrappeFunctionPlugin extends FunctionPlugin {
 				if (!doctype || !name || !fieldname) return "#ARG!";
 
 				const key = `FRAPPE_GET:${doctype}:${name}:${fieldname}`;
-				return this._fm.getOrFetch(
+				// Batch with other per-row FRAPPE_GET calls (one SQL IN-query per group).
+				return this._fm.batch_aggregate(
 					key,
-					() =>
-						frappe
-							.call({
-								method: "excel_view.api.frappe_get",
-								args:   { doctype, name, fieldname },
-							})
-							.then((r) => r.message?.value ?? ""),
+					{ aggr_type: "get", doctype, fieldname, fk1: "name", fv1: name },
 					state.formulaAddress,
 				);
 			},
@@ -390,20 +486,9 @@ class FrappeFunctionPlugin extends FunctionPlugin {
 
 				const key = `FRAPPE_SUM:${doctype}:${fieldname}:${_s(fk1)}:${_s(fv1)}:${_s(fk2)}:${_s(fv2)}:${_s(fk3)}:${_s(fv3)}:${_s(fk4)}:${_s(fv4)}`;
 
-				return this._fm.getOrFetch(
+				return this._fm.batch_aggregate(
 					key,
-					() =>
-						frappe
-							.call({
-								method: "excel_view.api.frappe_aggregate",
-								args:   {
-									doctype,
-									fieldname,
-									aggr_type: "sum",
-									fk1, fv1, fk2, fv2, fk3, fv3, fk4, fv4,
-								},
-							})
-							.then((r) => r.message?.value ?? 0),
+					{ aggr_type: "sum", doctype, fieldname, fk1, fv1, fk2, fv2, fk3, fv3, fk4, fv4 },
 					state.formulaAddress,
 				);
 			},
@@ -425,20 +510,9 @@ class FrappeFunctionPlugin extends FunctionPlugin {
 				const filters = _build_filters(fk1, fv1, fk2, fv2, fk3, fv3);
 				const key = `FRAPPE_COUNT:${doctype}:${JSON.stringify(filters)}`;
 
-				return this._fm.getOrFetch(
+				return this._fm.batch_aggregate(
 					key,
-					() =>
-						frappe
-							.call({
-								method: "excel_view.api.frappe_aggregate",
-								args:   {
-									doctype,
-									fieldname: "name",
-									aggr_type: "count",
-									fk1, fv1, fk2, fv2, fk3, fv3,
-								},
-							})
-							.then((r) => r.message?.value ?? 0),
+					{ aggr_type: "count", doctype, fieldname: "name", fk1, fv1, fk2, fv2, fk3, fv3 },
 					state.formulaAddress,
 				);
 			},
@@ -461,20 +535,59 @@ class FrappeFunctionPlugin extends FunctionPlugin {
 				const filters = _build_filters(fk1, fv1, fk2, fv2, fk3, fv3);
 				const key = `FRAPPE_AVG:${doctype}:${fieldname}:${JSON.stringify(filters)}`;
 
-				return this._fm.getOrFetch(
+				return this._fm.batch_aggregate(
 					key,
-					() =>
-						frappe
-							.call({
-								method: "excel_view.api.frappe_aggregate",
-								args:   {
-									doctype,
-									fieldname,
-									aggr_type: "avg",
-									fk1, fv1, fk2, fv2, fk3, fv3,
-								},
-							})
-							.then((r) => r.message?.value ?? 0),
+					{ aggr_type: "avg", doctype, fieldname, fk1, fv1, fk2, fv2, fk3, fv3 },
+					state.formulaAddress,
+				);
+			},
+		);
+	}
+
+	// ── FRAPPE_MAX ────────────────────────────────────────────────────────────
+
+	frappe_max(ast, state) {
+		return this.runFunction(
+			ast.args,
+			state,
+			this.metadata("FRAPPE_MAX"),
+			(doctype, fieldname, fk1, fv1, fk2, fv2, fk3, fv3) => {
+				doctype   = _s(doctype);
+				fieldname = _s(fieldname);
+
+				if (!doctype || !fieldname) return "#ARG!";
+
+				const filters = _build_filters(fk1, fv1, fk2, fv2, fk3, fv3);
+				const key = `FRAPPE_MAX:${doctype}:${fieldname}:${JSON.stringify(filters)}`;
+
+				return this._fm.batch_aggregate(
+					key,
+					{ aggr_type: "max", doctype, fieldname, fk1, fv1, fk2, fv2, fk3, fv3 },
+					state.formulaAddress,
+				);
+			},
+		);
+	}
+
+	// ── FRAPPE_MIN ────────────────────────────────────────────────────────────
+
+	frappe_min(ast, state) {
+		return this.runFunction(
+			ast.args,
+			state,
+			this.metadata("FRAPPE_MIN"),
+			(doctype, fieldname, fk1, fv1, fk2, fv2, fk3, fv3) => {
+				doctype   = _s(doctype);
+				fieldname = _s(fieldname);
+
+				if (!doctype || !fieldname) return "#ARG!";
+
+				const filters = _build_filters(fk1, fv1, fk2, fv2, fk3, fv3);
+				const key = `FRAPPE_MIN:${doctype}:${fieldname}:${JSON.stringify(filters)}`;
+
+				return this._fm.batch_aggregate(
+					key,
+					{ aggr_type: "min", doctype, fieldname, fk1, fv1, fk2, fv2, fk3, fv3 },
 					state.formulaAddress,
 				);
 			},
@@ -588,6 +701,46 @@ class FrappeFunctionPlugin extends FunctionPlugin {
 		);
 	}
 
+	// ── FRAPPE_CHILD_GET ─────────────────────────────────────────────────────────────────
+	// FRAPPE_CHILD_GET(parent_doctype, parent_name, child_field, row_index, fieldname)
+	//
+	// Fetches one field from a specific row (1-based) of a child table.
+	//
+	// Examples:
+	//   =FRAPPE_CHILD_GET("Sales Invoice","SINV-0001","items",1,"amount")
+	//   =FRAPPE_CHILD_GET("Purchase Order","PO-0042","items",3,"rate")
+
+	frappe_child_get(ast, state) {
+		return this.runFunction(
+			ast.args,
+			state,
+			this.metadata("FRAPPE_CHILD_GET"),
+			(parent_doctype, parent_name, child_field, row_index, fieldname) => {
+				parent_doctype = _s(parent_doctype);
+				parent_name    = _s(parent_name);
+				child_field    = _s(child_field);
+				fieldname      = _s(fieldname);
+
+				if (!parent_doctype || !parent_name || !child_field || !row_index || !fieldname) {
+					return "#ARG!";
+				}
+
+				const key = `FRAPPE_CHILD_GET:${parent_doctype}:${parent_name}:${child_field}:${row_index}:${fieldname}`;
+				return this._fm.getOrFetch(
+					key,
+					() =>
+						frappe
+							.call({
+								method: "excel_view.api.frappe_child_get",
+								args:   { parent_doctype, parent_name, child_field, row_index, fieldname },
+							})
+							.then((r) => r.message?.value ?? ""),
+					state.formulaAddress,
+				);
+			},
+		);
+	}
+
 	// ── SMART_LOOKUP ─────────────────────────────────────────────────────────────────────
 	// SMART_LOOKUP(lookup_value, target_doctype, return_field [, source_doctype])
 	//
@@ -645,6 +798,8 @@ const _S  = { argumentType: FunctionArgumentType.STRING };
 const _Sn = { argumentType: FunctionArgumentType.STRING, optionalArg: true };
 /** Optional scalar (string or number) argument — for filter values. */
 const _An = { argumentType: FunctionArgumentType.SCALAR, optionalArg: true };
+/** Required number argument. */
+const _N  = { argumentType: FunctionArgumentType.NUMBER };
 /** Optional number argument. */
 const _Nn = { argumentType: FunctionArgumentType.NUMBER, optionalArg: true };
 
@@ -678,6 +833,15 @@ FrappeFunctionPlugin.implementedFunctions = {
 		method:     "frappe_avg",
 		parameters: [_S, _S, _An, _An, _An, _An, _An, _An],
 	},
+	FRAPPE_MAX: {
+		method:     "frappe_max",
+		// doctype, fieldname, then up to 3 filter key/value pairs
+		parameters: [_S, _S, _An, _An, _An, _An, _An, _An],
+	},
+	FRAPPE_MIN: {
+		method:     "frappe_min",
+		parameters: [_S, _S, _An, _An, _An, _An, _An, _An],
+	},
 	GL_BALANCE: {
 		method:     "gl_balance",
 		parameters: [_S, _S, _Sn, _Sn, _Sn, _Sn],
@@ -696,19 +860,141 @@ FrappeFunctionPlugin.implementedFunctions = {
 		// lookup_value, target_doctype, return_field [, source_doctype]
 		parameters: [_S, _S, _S, _Sn],
 	},
+	// V3.3 — Child table row access
+	// parent_doctype, parent_name, child_field, row_index (1-based), fieldname
+	FRAPPE_CHILD_GET: {
+		method:     "frappe_child_get",
+		parameters: [_S, _S, _S, _N, _S],
+	},
 };
 
-// ── Register with HyperFormula ────────────────────────────────────────────────
-// This runs at module-eval time — before any HyperFormula.buildEmpty() call.
-//
-// The second argument is a *translations* dict (NOT the implementedFunctions).
-// HF's getFunction() gate-checks isFunctionTranslated() — if a function is not
-// in the translation table the evaluator returns #NAME? even when the plugin is
-// registered.  We register for enGB (HF default) with identity translations
-// (function name = its own formula-language name).
+// ── Register core plugin with HyperFormula ────────────────────────────────────
+// Runs at module-eval time — before any HyperFormula.buildEmpty() call.
 
 const _fn_translations = Object.fromEntries(
 	Object.keys(FrappeFunctionPlugin.implementedFunctions).map((name) => [name, name]),
 );
 
 HyperFormula.registerFunctionPlugin(FrappeFunctionPlugin, { enGB: _fn_translations });
+
+// ── Dynamic formula registration from Excel Formula DocType ───────────────────
+// frappe.boot.excel_formula_configs is injected by extend_bootinfo (api.py).
+// Each config is a user-defined shortcut that wraps the core primitives above.
+// We build a DynamicPlugin class at module-eval time and register it with HF.
+//
+// Each dynamic formula:
+//   - Requires 0 mandatory args (all filters are preset in the DocType)
+//   - Accepts up to 4 optional extra filter key/value pair args for ad-hoc narrowing
+//
+// Runtime filter resolution:
+//   - "PERIOD_START()" / "PERIOD_END()" in preset filter values are resolved to
+//     the live period dates from formula_manager at call time.
+//   - Numeric-looking values are coerced to numbers for comparison operators.
+
+;(function _register_dynamic_formulas() {
+	const configs = frappe.boot?.excel_formula_configs;
+	if (!Array.isArray(configs) || !configs.length) return;
+
+	/** Resolve a preset filter value string at call time. */
+	const _resolve_fv = (raw) => {
+		if (raw === "PERIOD_START()") return frappe.views.excel.formula_manager?.period_start || "";
+		if (raw === "PERIOD_END()")   return frappe.views.excel.formula_manager?.period_end   || "";
+		if (raw === "TODAY()")        return frappe.datetime.get_today();
+		// Numeric coerce (e.g. "1", "0")
+		const n = Number(raw);
+		return isNaN(n) ? raw : n;
+	};
+
+	/** Build the arg list expected by the backend APIs from preset + extra args. */
+	function _build_args(cfg, extra_args) {
+		const filters = (cfg.preset_filters || []).flatMap((f) => [
+			f.filter_key, _resolve_fv(f.filter_value),
+		]);
+		// extra_args come from the cell formula (up to 4 key/value pairs)
+		const extras = extra_args.filter((a) => a != null && a !== "");
+		return [...filters, ...extras];
+	}
+
+	const methods   = {};
+	const implemented = {};
+
+	for (const cfg of configs) {
+		const fn_name = cfg.formula_name;                         // e.g. "REVENUE_MTD"
+		const method  = `_dyn_${fn_name.toLowerCase()}`;          // e.g. "_dyn_revenue_mtd"
+
+		methods[method] = function(ast, state) {
+			return this.runFunction(
+				ast.args, state, this.metadata(fn_name),
+				(fk1, fv1, fk2, fv2, fk3, fv3, fk4, fv4) => {
+					const extra = [fk1, fv1, fk2, fv2, fk3, fv3, fk4, fv4];
+					const all   = _build_args(cfg, extra);
+
+					// Flatten to positional fk/fv args (max 8 = 4 pairs, from extra only)
+					const [afk1, afv1, afk2, afv2, afk3, afv3, afk4, afv4] = all;
+					const addr = state.formulaAddress;
+					const fm   = frappe.views.excel.formula_manager;
+
+					if (cfg.formula_type === "sum") {
+						const key = `DYN_SUM:${fn_name}:${JSON.stringify(all)}`;
+						return fm.batch_aggregate(key, {
+							aggr_type: "sum", doctype: cfg.source_doctype,
+							fieldname: cfg.target_fieldname,
+							fk1: afk1, fv1: afv1, fk2: afk2, fv2: afv2,
+							fk3: afk3, fv3: afv3, fk4: afk4, fv4: afv4,
+						}, addr);
+
+					} else if (cfg.formula_type === "count") {
+						const key = `DYN_COUNT:${fn_name}:${JSON.stringify(all)}`;
+						return fm.batch_aggregate(key, {
+							aggr_type: "count", doctype: cfg.source_doctype,
+							fieldname: "name",
+							fk1: afk1, fv1: afv1, fk2: afk2, fv2: afv2, fk3: afk3, fv3: afv3,
+						}, addr);
+
+					} else if (cfg.formula_type === "avg") {
+						const key = `DYN_AVG:${fn_name}:${JSON.stringify(all)}`;
+						return fm.batch_aggregate(key, {
+							aggr_type: "avg", doctype: cfg.source_doctype,
+							fieldname: cfg.target_fieldname,
+							fk1: afk1, fv1: afv1, fk2: afk2, fv2: afv2, fk3: afk3, fv3: afv3,
+						}, addr);
+
+					} else if (cfg.formula_type === "get") {
+						// get requires name as first extra arg
+						const name = afk1 || "";
+						if (!name) return "#ARG!";
+						const key = `DYN_GET:${fn_name}:${name}`;
+						return fm.getOrFetch(key, () =>
+							frappe.call({
+								method: "excel_view.api.frappe_get",
+								args:   { doctype: cfg.source_doctype, name, fieldname: cfg.target_fieldname },
+							}).then((r) => r.message?.value ?? ""), addr);
+
+					} else {
+						return "#TYPE!";
+					}
+				},
+			);
+		};
+
+		// Up to 4 optional extra filter key/value pair args
+		const _opt = { argumentType: FunctionArgumentType.SCALAR, optionalArg: true };
+		implemented[fn_name] = {
+			method:      method,
+			parameters:  [_opt, _opt, _opt, _opt, _opt, _opt, _opt, _opt],
+		};
+	}
+
+	// Build class dynamically — methods added to prototype before HF sees it
+	class DynamicFormulaPlugin extends FunctionPlugin {}
+	Object.assign(DynamicFormulaPlugin.prototype, methods);
+	DynamicFormulaPlugin.implementedFunctions = implemented;
+
+	const dyn_translations = Object.fromEntries(
+		Object.keys(implemented).map((name) => [name, name]),
+	);
+	HyperFormula.registerFunctionPlugin(DynamicFormulaPlugin, { enGB: dyn_translations });
+
+	// Expose for debug / intellisense
+	frappe.views.excel.dynamic_formula_configs = configs;
+})();

@@ -30,6 +30,93 @@
 
 frappe.provide("frappe.views.excel");
 
+// ── V3: EER node module color — Office palette, fully dynamic ─────────────────
+// Maps any module name → one of 9 Microsoft Office-inspired colors via djb2 hash.
+// No hardcoded module names — works for any Frappe/ERPNext/custom app module.
+// Colors match Excel View's brand: Excel green, Word blue, Office corporate palette.
+function _eer_module_color(module_name) {
+	if (!module_name) return { bg: "#505967", bg_dark: "#3a4150" };
+	// djb2 hash → index into Office palette
+	let h = 5381;
+	for (let i = 0; i < module_name.length; i++) {
+		h = ((h << 5) + h) ^ module_name.charCodeAt(i);
+		h = h >>> 0;
+	}
+	// Microsoft Office application color palette — professional, Excel-adjacent
+	const OFFICE_LIGHT = [
+		"#1a6b40",  // Excel deep green
+		"#2b579a",  // Word blue
+		"#b7472a",  // PowerPoint red-orange
+		"#4b5892",  // Teams indigo
+		"#0067b8",  // Outlook blue
+		"#36654e",  // dark teal
+		"#6b3fa0",  // purple (OneNote-adjacent)
+		"#7b5a2a",  // warm brown (SharePoint-adjacent)
+		"#1e5878",  // dark cyan
+	];
+	const OFFICE_DARK = [
+		"#1e7d4a",  // Excel green (brighter on dark)
+		"#3366b8",  // Word blue (lighter)
+		"#cc5535",  // PPT orange
+		"#5b68a8",  // Teams indigo lighter
+		"#1589d8",  // Outlook blue lighter
+		"#3d7560",  // teal lighter
+		"#8050b8",  // purple lighter
+		"#9a7040",  // brown lighter
+		"#226890",  // cyan lighter
+	];
+	const is_dark = document.documentElement.getAttribute("data-theme") === "dark";
+	const palette = is_dark ? OFFICE_DARK : OFFICE_LIGHT;
+	return {
+		bg: palette[h % palette.length],
+		text: "#ffffff",
+	};
+}
+
+// ── V3: Field type badge meta ─────────────────────────────────────────────────
+// ── V3: Field type badge — semantic grouping, fully dynamic fallback ──────────
+// Known fieldtypes get semantic CSS class + 3-char abbreviation.
+// Any unknown fieldtype (custom fields, future Frappe types) auto-gets
+// a hash-derived color badge (first 3 chars of the type name, lower-cased).
+const EER_FT_GROUP = {
+	// Group → css class
+	link:    { cls: "ev-ftb-link",   types: ["Link", "Dynamic Link"] },
+	numeric: { cls: "ev-ftb-num",    types: ["Currency", "Float", "Int", "Percent", "Rating"] },
+	date:    { cls: "ev-ftb-date",   types: ["Date", "Datetime", "Time", "Duration"] },
+	check:   { cls: "ev-ftb-check",  types: ["Check"] },
+	select:  { cls: "ev-ftb-select", types: ["Select"] },
+	table:   { cls: "ev-ftb-table",  types: ["Table", "Table MultiSelect"] },
+	text:    { cls: "ev-ftb-text",   types: ["Small Text", "Text", "Long Text", "Text Editor", "Markdown Editor"] },
+	attach:  { cls: "ev-ftb-attach", types: ["Attach", "Attach Image"] },
+	geo:     { cls: "ev-ftb-geo",    types: ["Geolocation"] },
+	code:    { cls: "ev-ftb-code",   types: ["Code", "JSON", "Barcode"] },
+};
+// Build lookup map from the groups
+const EER_FIELD_TYPE_BADGE = (() => {
+	const map = {};
+	for (const [, group] of Object.entries(EER_FT_GROUP)) {
+		group.types.forEach(t => {
+			map[t] = { cls: group.cls, abbr: t.substring(0, 3).toUpperCase() };
+		});
+	}
+	return map;
+})();
+// For unknown fieldtypes: deterministic color from type name hash
+function _eer_ft_badge(fieldtype) {
+	if (!fieldtype) return { cls: "ev-ftb-data", abbr: "DAT", inline: null };
+	if (EER_FIELD_TYPE_BADGE[fieldtype]) return { ...EER_FIELD_TYPE_BADGE[fieldtype], inline: null };
+	// Unknown type — hash name to a hue, render inline color
+	let h = 5381;
+	for (let i = 0; i < fieldtype.length; i++) { h = ((h << 5) + h) ^ fieldtype.charCodeAt(i); h = h >>> 0; }
+	const hue = h % 360;
+	return {
+		cls: "ev-ftb-custom",
+		abbr: fieldtype.substring(0, 3).toUpperCase(),
+		inline: `background:hsl(${hue},35%,42%);color:#fff;`,  // muted professional, Office-adjacent
+	};
+}
+const EER_DEFAULT_BADGE = { cls: "ev-ftb-data", abbr: "DAT", inline: null };
+
 frappe.views.excel.JoinCanvas = class JoinCanvas {
 	// ── Constructor ───────────────────────────────────────────────────────────
 
@@ -179,6 +266,18 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 								<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" stroke-width="2" stroke-linecap="round"/></svg>
 								${__("Add DocType")}
 							</button>
+							<button class="ev-jc-hbtn ev-jc-layout-btn" title="${__("Auto-arrange nodes (dagre layout)")}">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="3" y="4" width="4" height="4" rx="1" stroke="currentColor" stroke-width="1.8"/><rect x="10" y="4" width="4" height="4" rx="1" stroke="currentColor" stroke-width="1.8"/><rect x="3" y="16" width="4" height="4" rx="1" stroke="currentColor" stroke-width="1.8"/><rect x="10" y="16" width="4" height="4" rx="1" stroke="currentColor" stroke-width="1.8"/><path d="M17 6h3M17 18h3M7 8v8M14 8v8" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+								${__("Layout")}
+							</button>
+							<button class="ev-jc-hbtn ev-jc-sql-btn" title="${__("View generated SQL")}">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><path d="M4 7h16M4 12h10M4 17h12" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+								SQL
+							</button>
+							<button class="ev-jc-hbtn ev-jc-flow-btn" title="${__("Toggle Query Flow panel")}">
+								<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><rect x="3" y="3" width="6" height="4" rx="1" stroke="currentColor" stroke-width="1.8"/><rect x="3" y="10" width="6" height="4" rx="1" stroke="currentColor" stroke-width="1.8"/><rect x="3" y="17" width="6" height="4" rx="1" stroke="currentColor" stroke-width="1.8"/><path d="M9 5h3l3 3v3m0 0v4m0-4h3m-3 4h3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>
+								${__("Flow")}
+							</button>
 							<button class="ev-jc-hbtn ev-jc-collaborate-btn" title="${__("Start or join a collaborative canvas session")}">
 								<svg width="14" height="14" viewBox="0 0 24 24" fill="none"><circle cx="9" cy="7" r="3" stroke="currentColor" stroke-width="1.8"/><circle cx="17" cy="9" r="2.5" stroke="currentColor" stroke-width="1.8"/><path d="M3 19c0-3.3 2.7-6 6-6s6 2.7 6 6" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/><path d="M17 16c1.7 0 3 1.3 3 3" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
 								${__("Collaborate")}
@@ -211,24 +310,39 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 					<button class="btn btn-sm btn-default ev-jc-patterns-btn" style="display:none">${__("Patterns")}</button>
 					<button class="btn btn-sm btn-default ev-jc-analyze-btn"  style="display:none">${__("Analyze")}</button>
 				</div>
-				<div class="ev-jc-stage">
-					<svg class="ev-jc-svg" xmlns="http://www.w3.org/2000/svg"></svg>
-					<div class="ev-jc-nodes"></div>
-					<div class="ev-jc-hint">
-						<b>${__("How to use:")}</b>
-						${__("1. Add a DocType node. &nbsp; 2. Drag ○ (right side) → drop on ○ (left side of another field) to create a join. &nbsp; 3. Check fields to include in the grid. &nbsp; 4. Click Apply.")}
+				<!-- V3: canvas body wraps flow panel + stage -->
+				<div class="ev-canvas-body">
+					<!-- Query Flow Panel slot (collapsed by default) -->
+					<div class="ev-qfp-slot" style="display:none;"></div>
+					<!-- Main stage: SVG wire layer + node cards -->
+					<div class="ev-jc-stage">
+						<svg class="ev-jc-svg" xmlns="http://www.w3.org/2000/svg"></svg>
+						<div class="ev-jc-nodes"></div>
+						<div class="ev-jc-hint">
+							<b>${__("How to use:")}</b>
+							${__("1. Click Flow → configure pipeline. &nbsp; 2. Add DocType nodes + drag ○ to join. &nbsp; 3. Click Apply.")}
+						</div>
+						<!-- Figma-style zoom controls (bottom-right corner) -->
+						<div class="ev-jc-zoom-controls">
+							<button class="ev-jc-zoom-btn ev-jc-zoom-out" title="${__("Zoom Out")} (Ctrl + Scroll)">−</button>
+							<span class="ev-jc-zoom-level">100%</span>
+							<button class="ev-jc-zoom-btn ev-jc-zoom-in" title="${__("Zoom In")} (Ctrl + Scroll)">+</button>
+							<button class="ev-jc-zoom-btn ev-jc-zoom-fit" title="${__("Fit to Screen")} (Shift+1)">
+								<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
+									<path d="M1 1h6v2H3v4H1V1zm14 0h-6v2h4v4h2V1zM1 15h6v-2H3v-4H1v6zm14 0h-6v-2h4v-4h2v6z"/>
+								</svg>
+							</button>
+						</div>
 					</div>
-					<!-- Figma-style zoom controls (bottom-right corner) -->
-					<div class="ev-jc-zoom-controls">
-						<button class="ev-jc-zoom-btn ev-jc-zoom-out" title="${__("Zoom Out")} (Ctrl + Scroll)">−</button>
-						<span class="ev-jc-zoom-level">100%</span>
-						<button class="ev-jc-zoom-btn ev-jc-zoom-in" title="${__("Zoom In")} (Ctrl + Scroll)">+</button>
-						<button class="ev-jc-zoom-btn ev-jc-zoom-fit" title="${__("Fit to Screen")} (Shift+1)">
-							<svg width="14" height="14" viewBox="0 0 16 16" fill="currentColor">
-								<path d="M1 1h6v2H3v4H1V1zm14 0h-6v2h4v4h2V1zM1 15h6v-2H3v-4H1v6zm14 0h-6v-2h4v-4h2v6z"/>
-							</svg>
-						</button>
+				</div>
+				<!-- SQL preview panel (bottom slide-up, hidden by default) -->
+				<div class="ev-jc-sql-panel" style="display:none;">
+					<div class="ev-jc-sql-header">
+						<span class="ev-jc-sql-title">Generated SQL</span>
+						<button class="ev-jc-sql-copy" title="${__("Copy SQL")}">Copy</button>
+						<button class="ev-jc-sql-close">✕</button>
 					</div>
+					<pre class="ev-jc-sql-code"></pre>
 				</div>
 			</div>
 		`).appendTo(document.body);
@@ -252,6 +366,33 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 		this.$overlay.find(".ev-jc-generate-btn").on("click", () => this._prompt_generative_query());
 		// Collaboration button
 		this.$overlay.find(".ev-jc-collaborate-btn").on("click", () => this._toggle_collaboration());
+		// V3 new buttons
+		this.$overlay.find(".ev-jc-layout-btn").on("click", () => this._auto_layout());
+		this.$overlay.find(".ev-jc-sql-btn").on("click", () => this._toggle_sql_panel());
+		this.$overlay.find(".ev-jc-sql-close").on("click", () => {
+			this.$overlay.find(".ev-jc-sql-panel").hide();
+			this.$overlay.find(".ev-jc-sql-btn").removeClass("ev-jc-hbtn--active");
+		});
+		this.$overlay.find(".ev-jc-sql-copy").on("click", () => {
+			const sql = this.$overlay.find(".ev-jc-sql-code").text();
+			frappe.utils.copy_to_clipboard(sql);
+			frappe.show_alert({ message: __("SQL copied to clipboard"), indicator: "green" }, 2);
+		});
+		this.$overlay.find(".ev-jc-flow-btn").on("click", () => {
+			const $slot = this.$overlay.find(".ev-qfp-slot");
+			const visible = $slot.is(":visible");
+			const opening = !visible;
+			$slot.toggle(opening);
+			this.$nodes.toggle(!opening);
+			this.$svg.toggle(!opening);
+			this.$overlay.find(".ev-jc-flow-btn").toggleClass("ev-jc-hbtn--active", opening);
+			if (opening) {
+				if (!this._flow_panel) this._init_flow_panel();
+				this._show_flowchart();
+			} else {
+				this._hide_flowchart();
+			}
+		});
 
 		// ── Figma-style Zoom & Pan Controls ────────────────────────────────
 
@@ -383,18 +524,32 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 		node_el.style.left = left + "px";
 		node_el.style.top  = top  + "px";
 
-		// ── Header ──
+		// ── Header — EER style, dynamic module color ──
+		// Base node always uses Excel green gradient (brand identity).
+		// Joined nodes use Office palette color for the module.
+		const is_dark_now = document.documentElement.getAttribute("data-theme") === "dark";
+		const _eer_clr = base
+			? { bg: is_dark_now ? "linear-gradient(135deg,#1a5c36 0%,#217346 100%)" : "linear-gradient(135deg,#1d6f42 0%,#2d9e5f 100%)" }
+			: _eer_module_color(meta?.module || "");
 		const hdr = document.createElement("div");
 		hdr.className = "ev-jc-node-header";
+		hdr.style.background = _eer_clr.bg;
+		hdr.style.color = "#ffffff";
+		const _module_label = meta?.module ? frappe.utils.escape_html(meta.module) : "";
 		hdr.innerHTML = `
-			<span class="ev-jc-node-title">${frappe.utils.escape_html(doctype)}</span>
-			${is_child && !base ? `<span class="ev-jc-ct-badge" title="${__("Child Table")}">CT</span>` : ""}
-			<button class="ev-jc-node-ai-target" title="${__("AI suggest from this node")}">✨</button>
-			<span class="ev-jc-node-count${base ? " ev-jc-node-count--base" : ""}"
-			      title="${__("Fields selected for grid")}">0 ${__("selected")}</span>
-			${!base
-				? `<button class="ev-jc-node-remove" title="${__("Remove")}">✕</button>`
-				: ""}
+			<div class="ev-jc-node-header-top">
+				<span class="ev-jc-node-title">${frappe.utils.escape_html(doctype)}</span>
+				${is_child && !base ? `<span class="ev-jc-ct-badge" title="${__("Child Table")}">CT</span>` : ""}
+				<button class="ev-jc-node-ai-target" title="${__("AI suggest from this node")}">✨</button>
+				${!base
+					? `<button class="ev-jc-node-remove" title="${__("Remove")}">✕</button>`
+					: ""}
+			</div>
+			<div class="ev-jc-node-header-sub">
+				${_module_label ? `<span class="ev-jc-node-module">${_module_label}</span>` : ""}
+				<span class="ev-jc-node-count${base ? " ev-jc-node-count--base" : ""}"
+				      title="${__("Fields selected for grid")}">0 ${__("selected")}</span>
+			</div>
 		`;
 		node_el.appendChild(hdr);
 
@@ -796,11 +951,22 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 			row.appendChild(port_in);
 		}
 
+		// V3: Field type badge — fully dynamic, handles any fieldtype including custom ones
+		if (df.fieldtype) {
+			const bm = _eer_ft_badge(df.fieldtype);
+			const badge = document.createElement("span");
+			badge.className = `ev-jc-ft-badge ${bm.cls}`;
+			badge.textContent = bm.abbr;
+			badge.title = df.fieldtype;
+			if (bm.inline) badge.setAttribute("style", bm.inline);
+			row.appendChild(badge);
+		}
+
 		// Label
 		const label = document.createElement("span");
 		label.className = "ev-jc-field-label";
 		label.textContent = df.label || df.fieldname;
-		label.title = df.fieldname;
+		label.title = `${df.fieldname}${df.fieldtype ? ` (${df.fieldtype})` : ""}`;
 		row.appendChild(label);
 
 		// Out-port (right) — on all nodes
@@ -1081,6 +1247,8 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 					// Re-render edges AFTER field pinning so SVG paths reflect new port positions
 					this._render_edges();
 					this._show_edge_badge(edge, res);
+					// V3: Sync QueryFlowPanel with the new valid join
+					this._sync_flow_panel();
 					// Persist layout so refresh restores this canvas state
 					// But skip if edge was restored from saved config (prevents infinite broadcast loop)
 					if (!edge._restored) this._auto_save_layout();
@@ -1297,7 +1465,6 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 
 	_show_preview() {
 		const cfg = this.get_join_config();
-		const valid_edges = cfg.edges.filter(e => e.selected_fields?.length);
 		if (!cfg.edges.length) {
 			frappe.show_alert({
 				message: __("Draw a connection first: drag ○ from one field to ○ on another DocType's field"),
@@ -1305,9 +1472,18 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 			}, 5);
 			return;
 		}
+		// Auto-include all non-system meta fields when user hasn't checked any yet
+		cfg.edges.forEach(edge => {
+			if (!edge.selected_fields?.length) {
+				edge.selected_fields = this._get_default_fields(
+					cfg.nodes.find(n => n.id === edge.tgt_node_id)?.doctype
+				);
+			}
+		});
+		const valid_edges = cfg.edges.filter(e => e.selected_fields?.length);
 		if (!valid_edges.length) {
 			frappe.show_alert({
-				message: __("Check at least one field on the joined DocType to preview"),
+				message: __("Could not resolve fields — check the join connection"),
 				indicator: "orange",
 			}, 4);
 			return;
@@ -1427,7 +1603,6 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 
 	_apply() {
 		const cfg = this.get_join_config();
-		const valid_edges = cfg.edges.filter(e => e.selected_fields?.length);
 
 		if (!cfg.edges.length) {
 			frappe.show_alert({
@@ -1436,9 +1611,18 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 			}, 5);
 			return;
 		}
+		// Auto-include all non-system meta fields when user hasn't checked any yet
+		cfg.edges.forEach(edge => {
+			if (!edge.selected_fields?.length) {
+				edge.selected_fields = this._get_default_fields(
+					cfg.nodes.find(n => n.id === edge.tgt_node_id)?.doctype
+				);
+			}
+		});
+		const valid_edges = cfg.edges.filter(e => e.selected_fields?.length);
 		if (!valid_edges.length) {
 			frappe.show_alert({
-				message: __("Check at least one field on the joined DocType to include in the grid"),
+				message: __("Could not resolve fields — check the join connection"),
 				indicator: "orange",
 			}, 4);
 			return;
@@ -1510,6 +1694,644 @@ frappe.views.excel.JoinCanvas = class JoinCanvas {
 			__("Save as View"),
 			__("Save"),
 		);
+	}
+
+	// ── V3: QueryFlowPanel init ────────────────────────────────────────────────
+
+	_init_flow_panel() {
+		const { QueryAST, QueryFlowPanel } = frappe.views.excel;
+		if (!QueryAST || !QueryFlowPanel) return;  // not loaded yet
+		// Start with a completely blank AST — user configures from scratch
+		this._query_ast = new QueryAST();
+		this._flow_panel = new QueryFlowPanel({
+			ast: this._query_ast,
+			canvas: this,
+			on_ast_change: (ast, mode) => {
+				this._refresh_sql_panel();
+				this._render_flowchart(ast);
+				if (mode === "run") this._run_ast_query(ast);
+			},
+		});
+		const $slot = this.$overlay.find(".ev-qfp-slot");
+		this._flow_panel.render($slot);
+	}
+
+	// ── V3: Real-time Query Flowchart (DAG canvas) ────────────────────────────
+
+	_show_flowchart() {
+		if (!this._$fc) {
+			this._$fc       = $('<div class="ev-qfp-fc"></div>');
+			this._$fc_inner = $('<div class="ev-fc-canvas-inner"></div>');
+			this._$fc_svg   = $('<svg class="ev-fc-svg" xmlns="http://www.w3.org/2000/svg"><defs></defs></svg>');
+			this._$fc_nl    = $('<div class="ev-fc-nodes-layer"></div>');
+			// Empty state lives directly in _$fc so position:absolute;inset:0 fills the whole canvas
+			this._$fc_empty = $(`<div class="ev-fc-empty" style="display:none">
+				<svg width="44" height="44" viewBox="0 0 44 44" fill="none">
+					<rect x="2" y="2" width="40" height="40" rx="8" stroke="#cbd5e1" stroke-width="1.5"/>
+					<path d="M10 15h24M10 22h16M10 29h10" stroke="#cbd5e1" stroke-width="1.5" stroke-linecap="round"/>
+				</svg>
+				<p>Select a DocType to see<br>the visual query plan</p>
+			</div>`);
+			this._$fc_inner.append(this._$fc_svg).append(this._$fc_nl);
+			this._$fc.append(this._$fc_inner).append(this._$fc_empty);
+			this.$stage.append(this._$fc);
+			this._init_fc_pan();
+		}
+		this._fc_prev_struct = null;
+		this._fc_prev_fps    = {};
+		this._$fc.show();
+		this._render_flowchart(this._query_ast);
+	}
+
+	_hide_flowchart() {
+		this._$fc?.hide();
+	}
+
+	// Figma-style grab-to-pan on the DAG canvas container
+	_init_fc_pan() {
+		const el = this._$fc[0];
+		let down = false, sx = 0, sy = 0, sl = 0, st = 0;
+
+		el.addEventListener("mousedown", e => {
+			if (e.button !== 0) return;
+			// Let clicks on node cards pass through (no pan when interacting with cards)
+			if (e.target.closest(".ev-fc-card")) return;
+			down = true;
+			sx = e.pageX; sy = e.pageY;
+			sl = el.scrollLeft; st = el.scrollTop;
+			el.classList.add("ev-qfp-fc--panning");
+			e.preventDefault();
+		});
+
+		el.addEventListener("mousemove", e => {
+			if (!down) return;
+			el.scrollLeft = sl - (e.pageX - sx);
+			el.scrollTop  = st - (e.pageY - sy);
+		});
+
+		const stop = () => {
+			down = false;
+			el.classList.remove("ev-qfp-fc--panning");
+		};
+		el.addEventListener("mouseup", stop);
+		el.addEventListener("mouseleave", stop);
+	}
+
+	/**
+	 * DAG canvas renderer — dagre LR layout, SVG bezier edges, absolute node cards.
+	 *
+	 * Diff strategy:
+	 *   struct changed  → full dagre re-layout + card rebuild (new nodes animate in)
+	 *   same struct     → patch body HTML in-place + brief pulse ring (zero blink)
+	 */
+	_render_flowchart(ast) {
+		if (!this._$fc || !this._$fc.is(":visible") || !ast) return;
+		if (!window.dagre) return;
+
+		// Empty state — no doctype selected yet
+		if (!ast.source.doctype) {
+			this._$fc_empty.show();
+			this._$fc_inner.hide();
+			this._fc_prev_struct = null;
+			return;
+		}
+		this._$fc_empty.hide();
+		this._$fc_inner.show();
+
+		const { nodes, edges } = this._fc_build_graph(ast);
+		const struct_key = nodes.map(n => n.key).join(",") + "|" +
+			edges.map(e => `${e.from}->${e.to}`).join(",");
+
+		if (struct_key !== this._fc_prev_struct) {
+			this._fc_full_rebuild(nodes, edges);
+			this._fc_prev_struct = struct_key;
+			this._fc_prev_fps = {};
+			nodes.forEach(n => { this._fc_prev_fps[n.key] = n.fp; });
+		} else {
+			// Same structure — patch changed nodes only (no layout re-run, no blink)
+			nodes.forEach(n => {
+				if (n.fp === this._fc_prev_fps[n.key]) return;
+				const $card = this._$fc_nl.find(`[data-key="${n.key}"]`);
+				if (!$card.length) return;
+				$card.find(".ev-fc-card-name").text(n.name);
+				$card.find(".ev-fc-card-body").html(this._fc_sections_html(n.sections));
+				$card.removeClass("ev-fc-card--pulse");
+				void $card[0].offsetWidth;  // force reflow to restart animation
+				$card.addClass("ev-fc-card--pulse");
+				this._fc_prev_fps[n.key] = n.fp;
+			});
+		}
+	}
+
+	// ── DAG graph builder ─────────────────────────────────────────────────────
+
+	_fc_build_graph(ast) {
+		const nodes = [], edges = [];
+		const esc = s => String(s ?? "").replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+		let tail = null;  // current last node key; array = fan-in pending
+
+		// Helper: push node + wire edge from tail
+		const push = (n) => {
+			n.h = this._fc_estimate_h(n.sections);
+			n.w = 220;
+			nodes.push(n);
+			if (Array.isArray(tail)) {
+				tail.forEach(t => edges.push({ from: t, to: n.key }));
+			} else if (tail) {
+				edges.push({ from: tail, to: n.key });
+			}
+			tail = n.key;
+		};
+
+		// SOURCE
+		const sf = ast.source.fields.length;
+		const src_items = sf
+			? ast.source.fields.slice(0, 4).map(f => esc(f.label || f.fieldname))
+				.concat(sf > 4 ? [`+${sf - 4} more`] : [])
+			: ["(all fields)"];
+		push({
+			key: "source", type: "source", label: "Source",
+			name: ast.source.doctype ? esc(ast.source.doctype) : "—",
+			active: true,
+			sections: [{ title: "Fields", items: src_items }],
+			fp: `source|${ast.source.doctype}|${sf}`,
+		});
+
+		// JOINS
+		ast.joins.forEach((j, ji) => {
+			const items = j.src_field && j.tgt_field
+				? [`${esc(j.src_field)} = ${esc(j.tgt_field)}`]
+				: ["Condition not set"];
+			push({
+				key: `join_${ji}`, type: "join",
+				label: `${j.join_type || "LEFT"} JOIN`,
+				name: j.tgt_doctype ? esc(j.tgt_doctype) : "—",
+				active: !!(j.tgt_doctype && j.src_field && j.tgt_field),
+				sections: [{ title: "On", items }],
+				fp: `join_${ji}|${j.tgt_doctype}|${j.src_field}|${j.tgt_field}`,
+			});
+		});
+
+		// FILTER
+		const cond_count = ast.where.groups.reduce((s, g) => s + g.conditions.length, 0);
+		if (cond_count > 0) {
+			const items = [];
+			let shown = 0;
+			outer: for (const g of ast.where.groups) {
+				for (const c of g.conditions) {
+					if (shown >= 3) { items.push(`+${cond_count - 3} more…`); break outer; }
+					items.push(`${esc(c.fieldname)} ${c.operator} ${esc(c.value ?? "")}`);
+					shown++;
+				}
+			}
+			push({
+				key: "filter", type: "filter", label: "Filter",
+				name: `${cond_count} condition${cond_count !== 1 ? "s" : ""} · ${ast.where.logic}`,
+				active: true,
+				sections: [{ title: "Conditions", items }],
+				fp: `filter|${cond_count}|${items.join("|")}`,
+			});
+		}
+
+		// AGGREGATE
+		if (ast.aggregate.enabled) {
+			const gb = ast.aggregate.group_by.map(g => esc(g.label || g.fieldname));
+			const aggs = ast.aggregate.aggregations.slice(0, 4)
+				.map(a => `${a.fn}(${esc(a.fieldname)}) → ${esc(a.alias)}`);
+			if (ast.aggregate.aggregations.length > 4)
+				aggs.push(`+${ast.aggregate.aggregations.length - 4} more…`);
+			push({
+				key: "aggregate", type: "aggregate", label: "Aggregate",
+				name: `GROUP BY ${gb.slice(0, 2).join(", ") || "—"}`,
+				active: true,
+				sections: [
+					gb.length ? { title: "Group By", items: gb.slice(0, 3).concat(gb.length > 3 ? [`+${gb.length - 3} more`] : []) } : null,
+					aggs.length ? { title: "Aggregations", items: aggs } : null,
+				].filter(Boolean),
+				fp: `agg|${gb.join()}|${aggs.join()}`,
+			});
+		}
+
+		// WINDOW FUNCTIONS — one node per function → fan-out then fan-in
+		if (ast.windows.length) {
+			const fan_from = Array.isArray(tail) ? tail[tail.length - 1] : tail;
+			const window_keys = [];
+
+			ast.windows.forEach((w, wi) => {
+				const _str = v => typeof v === "string" ? v : (v?.fieldname || v?.label || v?.alias || String(v));
+				const pb = (w.partition_by || []).filter(Boolean).map(v => esc(_str(v)));
+				const ob = (w.order_by || []).filter(Boolean).map(v => esc(_str(v)));
+				const sections = [
+					{ title: "Result", items: [`${w.fn || "FN"}(${esc(w.fieldname || "")}) → ${esc(w.alias || "")}`] },
+				];
+				if (pb.length) sections.push({ title: "Partition By", items: pb });
+				if (ob.length) sections.push({ title: "Order By", items: ob });
+				if (w.frame) sections.push({ title: "Frame", items: [esc(w.frame)] });
+
+				const wk = `window_${wi}`;
+				window_keys.push(wk);
+				nodes.push({
+					key: wk, type: "window",
+					label: `WINDOW · ${esc(w.alias || w.fn || "FN")}`,
+					name: `${w.fn || ""}(${esc(w.fieldname || "")})`,
+					active: true, sections,
+					w: 220, h: this._fc_estimate_h(sections),
+					fp: `win_${wi}|${w.fn}|${w.fieldname}|${w.alias}|${pb.join()}|${ob.join()}`,
+				});
+				edges.push({ from: fan_from, to: wk });
+			});
+
+			tail = window_keys;  // fan-in: next push() connects from all window nodes
+		}
+
+		// COMPUTE
+		if (ast.compute.length) {
+			const items = ast.compute.slice(0, 4).map(cp => esc(cp.alias || "—"));
+			if (ast.compute.length > 4) items.push(`+${ast.compute.length - 4} more…`);
+			push({
+				key: "compute", type: "compute", label: "Compute",
+				name: `${ast.compute.length} derived column${ast.compute.length !== 1 ? "s" : ""}`,
+				active: true,
+				sections: [{ title: "Expressions", items }],
+				fp: `compute|${ast.compute.length}|${items.join("|")}`,
+			});
+		} else if (Array.isArray(tail)) {
+			tail = tail[tail.length - 1];  // collapse window fan-in if no compute
+		}
+
+		// SORT
+		const real_sorts = ast.sort.filter(s => s.fieldname_or_alias);
+		if (real_sorts.length) {
+			const items = real_sorts.slice(0, 4)
+				.map(s => `${esc(s.fieldname_or_alias)} ${s.direction}`);
+			if (real_sorts.length > 4) items.push(`+${real_sorts.length - 4} more…`);
+			push({
+				key: "sort", type: "sort", label: "Sort",
+				name: `${real_sorts.length} field${real_sorts.length !== 1 ? "s" : ""}`,
+				active: true,
+				sections: [{ title: "Order By", items }],
+				fp: `sort|${items.join("|")}`,
+			});
+		}
+
+		// OUTPUT (always)
+		push({
+			key: "output", type: "output", label: "Output",
+			name: esc(ast.output?.sheet_name || "Query Result"),
+			active: !!ast.source.doctype,
+			sections: [{ title: "Limit", items: [`${(ast.limit || 10000).toLocaleString()} rows`] }],
+			fp: `output|${ast.output?.sheet_name}|${ast.limit}`,
+		});
+
+		return { nodes, edges };
+	}
+
+	_fc_estimate_h(sections) {
+		let h = 52;  // header
+		(sections || []).forEach(s => {
+			h += 22;  // section title
+			h += (s.items || []).length * 20;
+		});
+		return Math.max(h + 12, 72);
+	}
+
+	// ── Full dagre-based rebuild ──────────────────────────────────────────────
+
+	_fc_full_rebuild(nodes, edges) {
+		const g = new window.dagre.graphlib.Graph();
+		g.setGraph({ rankdir: "LR", nodesep: 56, ranksep: 110, marginx: 56, marginy: 56 });
+		g.setDefaultEdgeLabel(() => ({}));
+		nodes.forEach(n => g.setNode(n.key, { width: n.w, height: n.h }));
+		edges.forEach(e => g.setEdge(e.from, e.to));
+		window.dagre.layout(g);
+
+		const gw = g.graph().width + 80;
+		const gh = g.graph().height + 80;
+
+		this._$fc_inner.css({ width: gw, height: gh });
+		this._$fc_svg.attr({ width: gw, height: gh }).css({ width: gw, height: gh });
+		this._$fc_nl.css({ width: gw, height: gh });
+
+		// ── Render node cards ────────────────────────────────────────────────
+		this._$fc_nl.empty();
+		nodes.forEach(n => {
+			const pos = g.node(n.key);
+			const left = Math.round(pos.x - n.w / 2);
+			const top  = Math.round(pos.y - n.h / 2);
+			const $card = $(this._fc_node_html(n));
+			$card.css({ left, top, width: n.w });
+			this._$fc_nl.append($card);
+		});
+
+		// ── Draw SVG bezier edges ────────────────────────────────────────────
+		const is_dark = document.documentElement.getAttribute("data-theme") === "dark";
+		const arw_fill = is_dark ? "#484f58" : "#94a3b8";
+		this._$fc_svg.find("defs").html(`
+			<marker id="ev-fc-arw" viewBox="0 0 8 8" refX="7" refY="4"
+			        markerWidth="6" markerHeight="6" orient="auto-start-reverse">
+				<path d="M0,1 L7,4 L0,7 Z" fill="${arw_fill}"/>
+			</marker>`);
+		this._$fc_svg.find("path.ev-fc-edge").remove();
+
+		const node_map = new Map(nodes.map(n => [n.key, n]));
+		edges.forEach(e => {
+			const s = g.node(e.from), t = g.node(e.to);
+			if (!s || !t) return;
+			const sw = (node_map.get(e.from)?.w || 220);
+			const tw = (node_map.get(e.to)?.w || 220);
+			const x1 = s.x + sw / 2, y1 = s.y;
+			const x2 = t.x - tw / 2, y2 = t.y;
+			const cp = Math.abs(x2 - x1) * 0.45;
+			const d = `M${x1},${y1} C${x1 + cp},${y1} ${x2 - cp},${y2} ${x2},${y2}`;
+			const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+			path.setAttribute("d", d);
+			path.setAttribute("class", "ev-fc-edge");
+			path.setAttribute("fill", "none");
+			path.setAttribute("marker-end", "url(#ev-fc-arw)");
+			this._$fc_svg[0].appendChild(path);
+		});
+	}
+
+	// ── Node card HTML ────────────────────────────────────────────────────────
+
+	_fc_sections_html(sections) {
+		if (!sections?.length) return "";
+		return sections.map(s => `
+			<div class="ev-fc-section">
+				${s.title ? `<div class="ev-fc-section-title">${s.title}<span class="ev-fc-section-count">${s.items.length}</span></div>` : ""}
+				<div class="ev-fc-section-items">${(s.items || []).map(item => `<span class="ev-fc-chip">${item}</span>`).join("")}</div>
+			</div>`).join("");
+	}
+
+	_fc_node_html(node) {
+		const ICONS = {
+			source:    `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="1" y="1" width="14" height="14" rx="3" stroke="currentColor" stroke-width="1.5"/><path d="M4 5h8M4 8h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>`,
+			join:      `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><circle cx="5.5" cy="8" r="4" stroke="currentColor" stroke-width="1.4"/><circle cx="10.5" cy="8" r="4" stroke="currentColor" stroke-width="1.4"/></svg>`,
+			filter:    `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 4h12M4.5 8h7M7 12h2" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+			aggregate: `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 13V8M6 13V5M9 13V7M12 13V3" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/></svg>`,
+			window:    `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><rect x="1" y="3" width="14" height="10" rx="2" stroke="currentColor" stroke-width="1.4"/><path d="M1 7h14" stroke="currentColor" stroke-width="1.3"/><path d="M5.5 7v6" stroke="currentColor" stroke-width="1.3"/></svg>`,
+			compute:   `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 8h10M8 3v10" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/><circle cx="3" cy="4" r="1" fill="currentColor"/><circle cx="13" cy="12" r="1" fill="currentColor"/></svg>`,
+			sort:      `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M3 4h7M3 8h5M3 12h3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/><path d="M12 3v10M9 10l3 3 3-3" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/></svg>`,
+			output:    `<svg width="14" height="14" viewBox="0 0 16 16" fill="none"><path d="M2 10l4-4 3 3 4-5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"/><rect x="1" y="1" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.4"/></svg>`,
+		};
+		const inactive_cls = node.active ? "" : " ev-fc-card--inactive";
+		return `
+			<div class="ev-fc-card ev-fc-card--${node.type}${inactive_cls}" data-key="${node.key}">
+				<div class="ev-fc-card-header">
+					<span class="ev-fc-card-hicon">${ICONS[node.type] || ""}</span>
+					<div class="ev-fc-card-head-text">
+						<div class="ev-fc-card-type">${node.label}</div>
+						<div class="ev-fc-card-name">${node.name}</div>
+					</div>
+				</div>
+				<div class="ev-fc-card-body">${this._fc_sections_html(node.sections)}</div>
+			</div>`;
+	}
+
+	/**
+	 * Execute a QueryAST via DuckDB — bulk-fetch required tables,
+	 * run SQL, push results to a new sheet tab.
+	 */
+	async _run_ast_query(ast) {
+		const errors = ast.validate();
+		if (errors.length) {
+			frappe.msgprint({ title: __("Query Errors"), message: errors.join("<br>"), indicator: "red" });
+			return;
+		}
+		frappe.show_alert({ message: __("Running query…"), indicator: "blue" }, 3);
+		try {
+			const engine = frappe.views.excel.duckdb_v2;
+			const { headers, rows, query_ms } = await engine.run_ast(ast);
+			this._show_query_preview(headers, rows, query_ms, ast);
+		} catch (e) {
+			frappe.msgprint({ title: __("Query Failed"), message: e.message, indicator: "red" });
+		}
+	}
+
+	/**
+	 * Show an inline query result preview inside the canvas overlay.
+	 * User can inspect the data, then click "Apply to Sheet" to create a new tab,
+	 * or "Dismiss" to discard.
+	 */
+	_show_query_preview(headers, rows, query_ms, ast) {
+		this.$overlay.find(".ev-qfp-result-panel").remove();
+
+		const PREVIEW_LIMIT = 500;
+		const preview_rows = rows.slice(0, PREVIEW_LIMIT);
+		const truncated = rows.length > PREVIEW_LIMIT;
+
+		// Value formatter — null/undefined → empty, numbers right-aligned
+		const fmt_val = v => {
+			if (v === null || v === undefined || v === "") return "";
+			return String(v).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+		};
+		const is_numeric = v => v !== null && v !== undefined && v !== "" && !isNaN(Number(v));
+
+		// Column header row
+		const th_html = [
+			`<th class="ev-qr-th ev-qr-th--rownum">#</th>`,
+			...headers.map(h => `<th class="ev-qr-th">${fmt_val(h)}</th>`),
+		].join("");
+
+		// Data rows
+		const tbody_html = preview_rows.length
+			? preview_rows.map((r, ri) => {
+				const row_cls = `ev-qr-row${ri % 2 ? " ev-qr-row--alt" : ""}`;
+				const tds = [
+					`<td class="ev-qr-td ev-qr-td--rownum">${ri + 1}</td>`,
+					...headers.map((_, ci) => {
+						const v = r[ci];
+						const num = is_numeric(v);
+						return `<td class="ev-qr-td${num ? " ev-qr-td--num" : ""}">${fmt_val(v)}</td>`;
+					}),
+				].join("");
+				return `<tr class="${row_cls}">${tds}</tr>`;
+			}).join("")
+			: `<tr><td colspan="${headers.length + 1}" class="ev-prev-empty">${__("No rows returned")}</td></tr>`;
+
+		const sheet_name = ast.output?.sheet_name || "Query Result";
+		const total_label = rows.length.toLocaleString();
+		const col_label = headers.length;
+
+		const $panel = $(`
+			<div class="ev-qfp-result-panel">
+				<div class="ev-qfp-result-hdr">
+					<div class="ev-qfp-result-title">
+						<svg width="13" height="13" viewBox="0 0 16 16" fill="none" style="flex-shrink:0"><rect x="1" y="1" width="14" height="14" rx="2" stroke="currentColor" stroke-width="1.5"/><path d="M4 5h8M4 8h8M4 11h5" stroke="currentColor" stroke-width="1.3" stroke-linecap="round"/></svg>
+						<span>${__("Query Result")}</span>
+					</div>
+					<div class="ev-qfp-result-pills">
+						<span class="ev-qfp-result-pill">${total_label} ${__("rows")}</span>
+						<span class="ev-qfp-result-pill">${col_label} ${__("cols")}</span>
+						<span class="ev-qfp-result-pill ev-qfp-result-pill--time">${query_ms}ms</span>
+					</div>
+					<button class="ev-qfp-result-close" title="${__("Dismiss")}">
+						<svg width="12" height="12" viewBox="0 0 12 12" fill="currentColor"><path d="M1 1l10 10M11 1L1 11" stroke="currentColor" stroke-width="1.8" stroke-linecap="round"/></svg>
+					</button>
+				</div>
+				<div class="ev-qfp-result-body">
+					<div class="ev-qr-scroll">
+						<table class="ev-qr-table">
+							<thead><tr>${th_html}</tr></thead>
+							<tbody>${tbody_html}</tbody>
+						</table>
+					</div>
+				</div>
+				<div class="ev-qfp-result-footer">
+					<span class="ev-qfp-result-hint">
+						${truncated ? `<svg width="12" height="12" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-2px;margin-right:4px"><path d="M8 1a7 7 0 100 14A7 7 0 008 1zm0 3.5a.75.75 0 110 1.5.75.75 0 010-1.5zm0 2.75a.75.75 0 01.75.75v3.5a.75.75 0 01-1.5 0V8a.75.75 0 01.75-.75z"/></svg>Showing first ${PREVIEW_LIMIT.toLocaleString()} of ${total_label} rows` : `All ${total_label} rows shown`}
+					</span>
+					<div class="ev-qfp-result-actions">
+						<button class="ev-qfp-result-btn ev-qfp-result-btn--ghost ev-qfp-result-dismiss">${__("Dismiss")}</button>
+						<button class="ev-qfp-result-btn ev-qfp-result-btn--primary ev-qfp-result-apply">
+							<svg width="13" height="13" viewBox="0 0 16 16" fill="currentColor" style="vertical-align:-2px;margin-right:5px"><path d="M2 3.75C2 2.784 2.784 2 3.75 2h8.5c.966 0 1.75.784 1.75 1.75v8.5A1.75 1.75 0 0112.25 14h-8.5A1.75 1.75 0 012 12.25zm1.75-.25a.25.25 0 00-.25.25v8.5c0 .138.112.25.25.25h8.5a.25.25 0 00.25-.25v-8.5a.25.25 0 00-.25-.25zM7 10.5a.75.75 0 011.5 0v2h2a.75.75 0 010 1.5H6.25a.75.75 0 010-1.5H7z"/></svg>
+							${__("Apply to Sheet")}
+						</button>
+					</div>
+				</div>
+			</div>
+		`);
+
+		const dismiss = () => $panel.remove();
+		$panel.find(".ev-qfp-result-close").on("click", dismiss);
+		$panel.find(".ev-qfp-result-dismiss").on("click", dismiss);
+
+		$panel.find(".ev-qfp-result-apply").on("click", () => {
+			const sm = this.board?.sheet_manager;
+			const col_configs = headers.map(h => ({
+				data:  h,
+				title: h,
+				type:  "text",
+				width: Math.min(200, Math.max(80, h.length * 9)),
+			}));
+			const row_objects = rows.map(r => {
+				const obj = {};
+				headers.forEach((h, i) => { obj[h] = r[i] ?? ""; });
+				return obj;
+			});
+			if (sm) {
+				// Pass serialized AST so sheet re-runs against fresh data on page restore
+				// instead of persisting the entire row set in user_settings.
+				const serialized_ast = JSON.stringify(ast);
+				sm.add_blank_sheet_with_data(sheet_name, col_configs, row_objects, null, serialized_ast);
+				frappe.show_alert({ message: __(`Created "${sheet_name}" — ${rows.length} rows`), indicator: "green" }, 4);
+				this.close();
+			} else {
+				frappe.msgprint({ title: __("No Sheet"), message: __("Open a workbook to receive the data."), indicator: "orange" });
+			}
+		});
+
+		this.$overlay.append($panel);
+	}
+
+	// ── V3: Helper / Layout / SQL / FlowPanel ─────────────────────────────────
+
+	/**
+	 * Returns up to 8 non-system, non-structural fields from a DocType's meta.
+	 * Used for auto-inclusion when user hasn't checked any fields yet.
+	 */
+	_get_default_fields(doctype) {
+		if (!doctype) return [];
+		const meta = frappe.get_meta(doctype);
+		if (!meta) return [];
+		const SKIP = new Set(["Column Break", "Section Break", "Tab Break", "HTML",
+			"Table", "Table MultiSelect", "Password", "Fold", "Heading", "Custom HTML"]);
+		const SYS = new Set(["name", "owner", "creation", "modified", "modified_by",
+			"docstatus", "idx", "parentfield", "parenttype"]);
+		return (meta.fields || [])
+			.filter(f => !SKIP.has(f.fieldtype) && !f.is_virtual && !SYS.has(f.fieldname))
+			.slice(0, 8)
+			.map(f => f.fieldname);
+	}
+
+	/**
+	 * Auto-layout canvas nodes using dagre graph layout algorithm.
+	 * Arranges nodes left-to-right in a clean DAG matching edge topology.
+	 */
+	_auto_layout() {
+		// Lazy-load dagre (imported via bundle)
+		if (!window.dagre) {
+			frappe.show_alert({ message: __("Layout engine loading…"), indicator: "blue" }, 2);
+			return;
+		}
+		const g = new window.dagre.graphlib.Graph();
+		g.setGraph({ rankdir: "LR", ranksep: 80, nodesep: 30, marginx: 40, marginy: 40 });
+		g.setDefaultEdgeLabel(() => ({}));
+
+		const NODE_W = 270, NODE_H = 360;
+		this.nodes.forEach((node, id) => {
+			g.setNode(id, { width: NODE_W, height: NODE_H });
+		});
+		this.edges.forEach(e => {
+			if (e.valid !== false) g.setEdge(e.src_node_id, e.tgt_node_id);
+		});
+
+		window.dagre.layout(g);
+
+		this.nodes.forEach((node, id) => {
+			const pos = g.node(id);
+			if (!pos) return;
+			node.el.style.left = (pos.x - NODE_W / 2) + "px";
+			node.el.style.top  = (pos.y - NODE_H / 2) + "px";
+		});
+		this._render_edges();
+		frappe.show_alert({ message: __("Layout applied"), indicator: "green" }, 2);
+	}
+
+	/**
+	 * Toggle the SQL preview panel at the bottom of the canvas.
+	 */
+	_toggle_sql_panel() {
+		const $panel = this.$overlay.find(".ev-jc-sql-panel");
+		if ($panel.is(":visible")) {
+			$panel.hide();
+			this.$overlay.find(".ev-jc-sql-btn").removeClass("ev-jc-hbtn--active");
+		} else {
+			this._refresh_sql_panel();
+			$panel.show();
+			this.$overlay.find(".ev-jc-sql-btn").addClass("ev-jc-hbtn--active");
+		}
+	}
+
+	/**
+	 * Rebuild SQL panel content from current AST.
+	 */
+	_refresh_sql_panel() {
+		const $panel = this.$overlay.find(".ev-jc-sql-panel");
+		if (!$panel.length || !$panel.is(":visible")) return;
+
+		let sql = "-- Configure source and joins in the Query Flow panel →";
+		if (this._query_ast?.source?.doctype) {
+			try {
+				const gen = new frappe.views.excel.SQLGenerator(this._query_ast);
+				sql = gen.generate();
+			} catch (e) {
+				sql = `-- ${e.message}`;
+			}
+		}
+		$panel.find(".ev-jc-sql-code").text(sql);
+	}
+
+	/**
+	 * Sync QueryFlowPanel from current canvas edge/node state.
+	 */
+	_sync_flow_panel() {
+		if (!this._flow_panel) return;
+		const cfg = this.get_join_config();
+		this._flow_panel.sync_from_canvas({
+			base_doctype: this.board.doctype,
+			edges: (cfg.edges || []).map(e => {
+				const tgt = cfg.nodes.find(n => n.id === e.tgt_node_id);
+				const src = cfg.nodes.find(n => n.id === e.src_node_id);
+				return {
+					source_doctype: src?.doctype || this.board.doctype,
+					source_field:   e.src_field,
+					target_doctype: tgt?.doctype,
+					target_field:   e.tgt_field,
+				};
+			}).filter(e => e.target_doctype),
+		});
+		this._refresh_sql_panel();
 	}
 
 	// ── Serialisation ─────────────────────────────────────────────────────────

@@ -227,8 +227,6 @@ frappe.views.ExcelView = class ExcelView extends frappe.views.ListView {
 	// ── Render — triggers lazy load ──────────────────────────────────────────
 
 	render() {
-		if (!this.data.length) return;
-
 		// Show a loading indicator while the bundle is being fetched
 		if (!window._ev_deps_loaded && !window._ev_deps_loading) {
 			this._show_loading_placeholder();
@@ -297,8 +295,67 @@ frappe.views.ExcelView = class ExcelView extends frappe.views.ListView {
 		this.excel_board.refresh(this.data);
 	}
 
+	/**
+	 * Always keep the grid container visible — even when DocType has zero records.
+	 * Frappe's base toggle_result_area hides $result and shows $no_result when
+	 * data=[], which prevents HOT from initialising and shows the empty state.
+	 */
+	toggle_result_area() {
+		super.toggle_result_area();
+		this.$result.show();
+		this.$no_result.hide();
+	}
+
 	render_header() {
 		// intentionally empty — HOT renders its own column headers
+	}
+
+	/**
+	 * Frappe's process_document_refreshes() patches this.data in-place then
+	 * calls render_list().  Override so incremental realtime updates flow into HOT.
+	 */
+	render_list() {
+		if (this.excel_board) {
+			this.excel_board.refresh(this.data, { append: false });
+		}
+	}
+
+	/**
+	 * After super (which calls frappe.realtime.off("list_update")), re-register
+	 * ExcelBoard's formula-cache/data handler so it survives every refresh() cycle.
+	 */
+	setup_realtime_updates() {
+		super.setup_realtime_updates();
+		this.excel_board?._register_formula_realtime();
+	}
+
+	/**
+	 * Frappe's process_document_refreshes() calls this when the route check fails
+	 * (ExcelView route is /view/excel, never matches "List/...").  The default
+	 * calls frappe.realtime.doctype_unsubscribe() → server stops sending events.
+	 * Override: skip the unsubscribe so the socket stays in the doctype room.
+	 */
+	disable_realtime_updates() {
+		this.realtime_events_setup = false;
+	}
+
+	/**
+	 * Frappe's default implementation gates on route[0] === "List" — ExcelView's
+	 * route (/app/{doctype}/view/excel) never matches, so the pending queue is
+	 * always discarded and disable_realtime_updates() is called instead of
+	 * render_list().  Override to process the queue and refresh the grid directly.
+	 */
+	process_document_refreshes() {
+		if (!this.pending_document_refreshes?.length) return;
+		this.pending_document_refreshes = [];
+		if (!this.excel_board || this.excel_board._destroyed) return;
+		clearTimeout(this._excel_pdr_timer);
+		this._excel_pdr_timer = setTimeout(() => {
+			if (!this.excel_board?._destroyed) {
+				this.last_args = null; // bypass no_change() 3-second throttle
+				this.refresh();
+			}
+		}, 100);
 	}
 
 	// ── Sidebar ──────────────────────────────────────────────────────────────

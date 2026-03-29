@@ -112,7 +112,7 @@ frappe.views.excel.FormulaBridge = class FormulaBridge {
 		if (!this.hf || !changes) return;
 
 		const updates = changes
-			.filter(([, , , newVal]) => newVal !== null && newVal !== undefined)
+			.filter(([row, col, , newVal]) => newVal !== null && newVal !== undefined && row >= 0 && col >= 0)
 			.map(([row, col, , newVal]) => ({
 				address: { sheet: this.sheet_id, row, col },
 				newValue: this._coerce(newVal),

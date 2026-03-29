@@ -134,8 +134,6 @@ frappe.views.ExcelView = class ExcelView extends frappe.views.ListView {
 	 * Initialise ExcelBoard on first render; call refresh() on subsequent renders.
 	 */
 	render() {
-		if (!this.data.length) return;
-
 		if (!this.excel_board) {
 			this.excel_board = new frappe.views.ExcelBoard({
 				wrapper: this.$result[0],
@@ -147,10 +145,14 @@ frappe.views.ExcelView = class ExcelView extends frappe.views.ListView {
 				fields: this.fields,
 				list_view: this,
 			});
+			// Hide Frappe's "no records" empty state — Excel View always shows
+			// the grid + toolbar even when the DocType has zero records.
+			this.$no_result?.hide();
 		} else {
 			// Pass append=true when this is a load-more (start > 0) so
 			// board.refresh() can preserve the current scroll position.
 			this.excel_board.refresh(this.data, { append: this.start > 0 });
+			this.$no_result?.hide();
 		}
 	}
 
@@ -160,6 +162,56 @@ frappe.views.ExcelView = class ExcelView extends frappe.views.ListView {
 	 */
 	render_header() {
 		// intentionally empty
+	}
+
+	/**
+	 * Frappe's process_document_refreshes() patches this.data in-place then
+	 * calls render_list() — NOT render().  Override here so incremental
+	 * realtime updates (document saved in another window) flow into HOT.
+	 */
+	render_list() {
+		if (this.excel_board) {
+			this.excel_board.refresh(this.data, { append: false });
+		}
+	}
+
+	/**
+	 * Frappe's setup_realtime_updates() calls frappe.realtime.off("list_update")
+	 * which wipes every handler — including ExcelBoard's formula-cache listener.
+	 * Re-register it after super so it survives every refresh() cycle.
+	 */
+	setup_realtime_updates() {
+		super.setup_realtime_updates();
+		this.excel_board?._register_formula_realtime();
+	}
+
+	/**
+	 * Frappe's process_document_refreshes() calls disable_realtime_updates() when
+	 * the current route doesn't match "List/<doctype>" — which is always true for
+	 * ExcelView (/app/customer/view/excel).  The default implementation calls
+	 * frappe.realtime.doctype_unsubscribe() which tells the server to stop sending
+	 * events to this socket.  After the very first realtime event we'd be silently
+	 * unsubscribed and never receive another update.
+	 *
+	 * Override: skip the unsubscribe; only reset the flag so that the next
+	 * setup_realtime_updates() call (triggered by list_view.refresh()) re-registers
+	 * all handlers cleanly.
+	 */
+	disable_realtime_updates() {
+		this.realtime_events_setup = false;
+	}
+
+	/**
+	 * Override toggle_result_area so Excel View always keeps the grid
+	 * container ($result) visible — even when the DocType has zero records.
+	 * Without this, Frappe hides $result and shows $no_result when data=[],
+	 * which prevents HOT from initialising and renders an empty-state message
+	 * instead of the blank grid + toolbar.
+	 */
+	toggle_result_area() {
+		super.toggle_result_area();
+		this.$result.show();
+		this.$no_result.hide();
 	}
 
 	// ── Sidebar ───────────────────────────────────────────────────────────────

@@ -70,6 +70,12 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this._dirty_hidden_rows = false;
 		// V3.1 — Repeat Last Action (F4)
 		this._last_action = null;
+
+		// V3.3 — Bulk Add Mode
+		// _bulk_add_start: index in list_view.data where new (unsaved) rows begin (-1 = inactive)
+		this._bulk_add_start = -1;
+		this._bulk_renderer_hook = null; // HOT afterRenderer hook ref, removed on exit
+
 		this._setup();
 	}
 
@@ -111,9 +117,10 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this.workbook_manager = new frappe.views.excel.WorkbookManager({ board: this });
 
 		// V2.6 — Chart / CF / Pivot managers (toolbar delegates to these)
-		this.cf_manager     = new frappe.views.excel.CFManager({ board: this });
-		this.chart_manager  = new frappe.views.excel.ChartManager({ board: this });
-		this.pivot_builder  = new frappe.views.excel.PivotBuilder({ board: this });
+		this.cf_manager       = new frappe.views.excel.CFManager({ board: this });
+		this.chart_manager    = new frappe.views.excel.ChartManager({ board: this });
+		this.pivot_builder    = new frappe.views.excel.PivotBuilder({ board: this });
+		this.dashboard_manager = new frappe.views.excel.DashboardManager({ board: this });
 
 		// 2. Load persisted freeze state (needed before _init_hot)
 		this._frozen_cols = this.column_manager.load_freeze();
@@ -194,7 +201,21 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		}
 
 		// V2.3 — Wire the re-render callback now that this.hot exists.
-		frappe.views.excel.formula_manager?.set_rerender(() => this.hot?.render());
+		// Also refresh dashboard widgets when async formula results (e.g. FRAPPE_COUNT)
+		// resolve — without this, number card filters on formula columns show stale 0
+		// until the 30s auto-refresh fires.
+		frappe.views.excel.formula_manager?.set_rerender(() => {
+			this.hot?.render();
+			if (this.dashboard_manager?._active_sheet) {
+				this.dashboard_manager._refresh_data();
+			}
+		});
+
+		// ── Unified realtime handler ──────────────────────────────────────────
+		// Formula-cache realtime handler is registered via _register_formula_realtime()
+		// which is called by ExcelView.setup_realtime_updates() — this ensures the handler
+		// survives Frappe's frappe.realtime.off("list_update") that runs on every refresh().
+		this._register_formula_realtime();
 
 		// Status bar — after container is ready so $status_bar_container exists
 		this.status_bar = new frappe.views.excel.StatusBar({
@@ -238,10 +259,16 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			setTimeout(() => this._restore_chart_overlays(saved_charts), 100);
 		}
 
-		// Restore formula column templates from user_settings (no workbook needed)
+		// Restore formula column templates from user_settings (no workbook needed).
+		// Deduplicate by key — a past bug could produce two entries with the same
+		// __fml_N__ key; keep only the last occurrence (most recently saved).
 		const saved_formula_col_templates = frappe.get_user_settings(this.doctype)?.excel_formula_col_templates;
 		if (Array.isArray(saved_formula_col_templates) && saved_formula_col_templates.length) {
-			this._pending_formula_col_templates = saved_formula_col_templates;
+			const seen_keys = new Map();
+			for (const fc of saved_formula_col_templates) {
+				if (fc?.key) seen_keys.set(fc.key, fc);
+			}
+			this._pending_formula_col_templates = [...seen_keys.values()];
 		}
 
 		// Restore blank column configs from user_settings
@@ -306,6 +333,10 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this.$grid_main = $('<div class="ev-grid-main">').appendTo(this.$grid_area);
 
 		this.$hot_container = $('<div class="ev-hot-container">').appendTo(this.$grid_main);
+
+		// Dashboard canvas — shown when a Dashboard sheet is active, hidden otherwise
+		this.$dashboard_canvas = $('<div class="ev-dashboard-canvas">').appendTo(this.$grid_main);
+		this.$dashboard_canvas.hide();
 
 		// Status bar — fixed footer below the grid
 		this.$status_bar_container = $('<div class="ev-status-bar-container">').appendTo(this.$grid_main);
@@ -488,7 +519,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 					TH.innerHTML = `<div class="ev-tree-child-th">└</div>`;
 				}
 			},
-			// V3.1 — intercept F4; V3.3 — intercept Ctrl+E (Flash Fill)
+			// V3.1 — intercept F4; V3.3 — intercept Ctrl+E (Flash Fill); V3.3 — Ctrl+D (Fill Down)
 			beforeKeyDown: (e) => {
 				if (e.key === "F4" && !e.ctrlKey && !e.altKey && !e.shiftKey) {
 					e.stopImmediatePropagation();
@@ -499,6 +530,11 @@ frappe.views.ExcelBoard = class ExcelBoard {
 					e.stopImmediatePropagation();
 					e.preventDefault();
 					setTimeout(() => this._flash_fill(), 0);
+				}
+				if (e.key === "d" && e.ctrlKey && !e.altKey && !e.shiftKey) {
+					e.stopImmediatePropagation();
+					e.preventDefault();
+					setTimeout(() => this._fill_down(), 0);
 				}
 			},
 			// i18n
@@ -577,7 +613,9 @@ frappe.views.ExcelBoard = class ExcelBoard {
 
 		// V3.1 — Meta column: render combined Created/Updated cell
 		if (this.columns[col]?._is_meta_col) {
-			this._render_meta_cell(TD, this.list_view?.data?.[row]);
+			// Secondary sheets store data in sheet.data; base sheet falls back to list_view.data
+			const _row_src = this.sheet_manager?.get_current()?.data || this.list_view?.data;
+			this._render_meta_cell(TD, _row_src?.[row]);
 			TD.style.padding = "0";
 			TD.style.verticalAlign = "middle";
 			return;
@@ -585,7 +623,8 @@ frappe.views.ExcelBoard = class ExcelBoard {
 
 		// Social column: render Tags/Comments/Assign/Liked/Status/Idx
 		if (this.columns[col]?._is_social_col) {
-			this._render_social_cell(TD, this.list_view?.data?.[row]);
+			const _row_src = this.sheet_manager?.get_current()?.data || this.list_view?.data;
+			this._render_social_cell(TD, _row_src?.[row]);
 			TD.style.padding = "0";
 			TD.style.verticalAlign = "middle";
 			return;
@@ -924,6 +963,72 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	 *   4. Text fill          — all filled = same value → fill blanks with it
 	 *   5. Initials extract   — "John Smith" → "JS" pattern from example in next col
 	 */
+	/**
+	 * Ctrl+D — Fill Down.
+	 * Copies the value from the top row of each selected column to all rows below
+	 * within the selection. Works for ALL field types including Check (checkbox).
+	 *
+	 * Directly mutates list_view.data + calls hot.render() to avoid HOT's internal
+	 * change-pipeline quirks with custom cell types. Save is triggered via queue_save.
+	 */
+	_fill_down() {
+		const sel = this.hot?.getSelectedLast();
+		if (!sel) {
+			frappe.show_alert({ message: __("Select cells first"), indicator: "orange" }, 2);
+			return;
+		}
+
+		const r1 = Math.min(sel[0], sel[2]);
+		const r2 = Math.max(sel[0], sel[2]);
+		const c1 = Math.min(sel[1], sel[3]);
+		const c2 = Math.max(sel[1], sel[3]);
+
+		if (r2 <= r1) {
+			frappe.show_alert({ message: __("Select 2+ rows to fill down"), indicator: "orange" }, 2);
+			return;
+		}
+
+		const data = this.list_view.data;
+		const save_changes = [];   // format: [row, fieldname, oldVal, newVal] for queue_save
+
+		for (let c = c1; c <= c2; c++) {
+			const col_def = this.columns[c];
+			if (!col_def || col_def._readonly) continue;
+
+			const prop = col_def.data;
+			const src_row = data[r1];
+			if (!src_row) continue;
+
+			// Read source value directly from the data array (bypasses HOT rendering)
+			let src_val = src_row[prop];
+			// Coerce Check boolean → 0/1 for Frappe
+			if (col_def._df?.fieldtype === "Check" && typeof src_val === "boolean") {
+				src_val = src_val ? 1 : 0;
+			}
+
+			for (let r = r1 + 1; r <= r2; r++) {
+				const row_data = data[r];
+				if (!row_data || row_data._is_new) continue;
+				const old_val = row_data[prop];
+				if (old_val === src_val) continue;
+
+				// Mutate data array directly — hot.render() below will pick this up
+				row_data[prop] = src_val;
+				save_changes.push([r, prop, old_val, src_val]);
+			}
+		}
+
+		if (!save_changes.length) {
+			frappe.show_alert({ message: __("Nothing to fill"), indicator: "blue" }, 2);
+			return;
+		}
+
+		// Re-render grid so visual cells reflect the mutated data
+		this.hot.render();
+		// Persist to Frappe DB via the normal debounced save path
+		this.data_manager.queue_save(save_changes);
+	}
+
 	_flash_fill() {
 		const sel = this.hot?.getSelectedLast();
 		if (!sel) return;
@@ -1276,8 +1381,10 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		};
 
 		// ── Docstatus (only for submittable doctypes) ────────────────────
+		// For secondary sheets the flag is cached on the sheet state object
+		const _submittable = this.sheet_manager?.get_current()?._is_submittable ?? this._is_submittable;
 		let ds_html = "";
-		if (this._is_submittable) {
+		if (_submittable) {
 			const ds = row_data.docstatus ?? 0;
 			const DS = [
 				{ label: __("Draft"),     cls: "ev-sc-ds--draft" },
@@ -1346,7 +1453,8 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			const $el    = $(e.target).closest("[data-sc]");
 			const action = $el.data("sc");
 			const name   = $el.data("name");
-			const dt     = this.doctype;
+			// Use current sheet's doctype so secondary sheets operate on the right DocType
+			const dt     = this.sheet_manager?.get_current()?.doctype || this.doctype;
 			if (!name) return;
 			e.stopPropagation();
 
@@ -1357,7 +1465,8 @@ frappe.views.ExcelBoard = class ExcelBoard {
 					method: "frappe.desk.like.toggle_like",
 					args: { doctype: dt, name, add },
 					callback: (r) => {
-						const row = this.list_view.data?.find(d => d.name === name);
+						const _cur_data = this.sheet_manager?.get_current()?.data || this.list_view?.data;
+						const row = _cur_data?.find(d => d.name === name);
 						if (row) {
 							row._liked_by = r.message;
 							[...this._social_html_cache.keys()]
@@ -1743,11 +1852,18 @@ frappe.views.ExcelBoard = class ExcelBoard {
 
 	/** O(1) column index lookup — builds Map lazily, invalidated when columns change. */
 	_get_col_idx(fieldname) {
+		// Always rebuild when stale — nulled whenever this.columns is mutated (push/splice)
+		// or reassigned. Rebuild is cheap (10-20 cols typical), correctness is critical.
 		if (!this._col_index_map) {
 			this._col_index_map = new Map(this.columns.map((c, i) => [c.data, i]));
 		}
 		const idx = this._col_index_map.get(fieldname);
 		return idx !== undefined ? idx : -1;
+	}
+
+	/** Invalidate the _col_index_map cache. Call after any push/splice on this.columns. */
+	_invalidate_col_map() {
+		this._col_index_map = null;
 	}
 
 	/** Debounced persist of format_store to user_settings (800ms). */
@@ -1775,7 +1891,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	 * Visual feedback: brief red flash on the cell TD.
 	 */
 	_validate_changes(changes, source) {
-		if (!changes || source === "loadData" || source === "autofetch" || source === "flash_fill") return;
+		if (!changes || source === "loadData" || source === "autofetch" || source === "flash_fill" || source === "fill_down") return;
 
 		const _reject = (row, col, msg) => {
 			// Flash cell red for 600ms
@@ -1873,6 +1989,21 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		if (source === "autofetch") return;
 		if (source === "fill_scroll") return;  // formula cells written by _fill_new_rows
 
+		// Coerce Check field booleans → Frappe integers (0/1).
+		// HOT's checkbox autofill and our fill_down can produce true/false (boolean);
+		// Frappe's set_value expects 0 or 1 for Check fields.
+		if (source === "Autofill.fill" || source === "fill_down") {
+			changes.forEach((change, i) => {
+				if (!change) return;
+				const [row, prop, oldVal, newVal] = change;
+				if (typeof newVal !== "boolean") return;
+				const col_idx = this._get_col_idx(prop);
+				if (this.columns[col_idx]?._df?.fieldtype === "Check") {
+					changes[i] = [row, prop, oldVal, newVal ? 1 : 0];
+				}
+			});
+		}
+
 		// In array-of-objects mode HOT gives [row, fieldname, oldVal, newVal].
 		// formula_bridge needs numeric col indices, so convert.
 		const indexed = changes.map(([row, prop, oldVal, newVal]) => {
@@ -1889,8 +2020,16 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			this._fix_autofill_formulas(changes, indexed);
 		}
 
-		// Persist to Frappe DB
-		this.data_manager.queue_save(changes);
+		// Persist to Frappe DB — skip rows that are pending bulk creation (not in DB yet)
+		const _save_changes = this._bulk_add_start >= 0
+			? changes.filter(([row]) => row < this._bulk_add_start)
+			: changes;
+		if (_save_changes.length) {
+			this.data_manager.queue_save(_save_changes);
+		}
+		if (_save_changes.length !== changes.length) {
+			this._update_bulk_bar(); // refresh "X rows ready" count
+		}
 
 		// Keep local data array in sync.
 		// NOTE: for autofill formula cells, _fix_autofill_formulas already wrote the
@@ -1902,8 +2041,8 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			this.list_view.data[row][prop] = newVal;
 		});
 
-		// Inline insert: auto-fill fetch_from dependent fields when a Link field changes
-		if (this._new_row_idx >= 0) {
+		// Auto-fill fetch_from dependent fields when a Link field changes in any new row
+		if (this._new_row_idx >= 0 || this._bulk_add_start >= 0) {
 			this._autofill_fetch_from(changes);
 		}
 	}
@@ -1959,19 +2098,33 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	 * Uses "autofetch" as HOT change source so _on_change skips DB save + re-trigger.
 	 */
 	async _autofill_fetch_from(initial_changes) {
-		if (this._new_row_idx < 0) return;
+		// Works for both inline insert (_new_row_idx) and bulk add (_bulk_add_start).
+		// For bulk rows each changed row is handled independently.
+		const is_bulk = this._bulk_add_start >= 0;
+		if (this._new_row_idx < 0 && !is_bulk) return;
 
 		const meta = frappe.get_meta(this.doctype);
 		if (!meta) return;
 
-		// Build dependency map lazily (once per inline insert session)
+		// Build dependency map lazily
 		if (!this._fetch_from_map) {
 			this._fetch_from_map = this._build_fetch_from_map(meta);
 		}
 
-		const row_idx  = this._new_row_idx;
-		const row_data = this.list_view.data[row_idx];
-		if (!row_data?._is_new) return;
+		// Collect distinct new rows touched by these changes
+		const changed_rows = is_bulk
+			? [...new Set(initial_changes.map(([r]) => r).filter(r => r >= this._bulk_add_start))]
+			: (this._new_row_idx >= 0 ? [this._new_row_idx] : []);
+
+		for (const row_idx of changed_rows) {
+			const row_data = this.list_view.data[row_idx];
+			if (!row_data?._is_new) continue;
+			await this._run_fetch_from_row(row_idx, row_data, initial_changes);
+		}
+	}
+
+	async _run_fetch_from_row(row_idx, row_data, initial_changes) {
+		if (!this._fetch_from_map) return;
 
 		// BFS queue: [fieldname, newValue]
 		const queue   = [];
@@ -2187,10 +2340,11 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			}
 		}
 
-		// setDataAtCell with source 'fill_scroll' → afterRenderer gets formula string
-		// → is_formula()=true → async fetch fires. afterChange ignores this source.
+		// setDataAtRowProp: hot_changes uses [row, prop_string, value] — property name
+		// not numeric col index. afterRenderer sees formula string → async fetch fires.
+		// afterChange ignores 'fill_scroll' source.
 		if (hot_changes.length) {
-			this.hot.setDataAtCell(hot_changes, 'fill_scroll');
+			this.hot.setDataAtRowProp(hot_changes, 'fill_scroll');
 		}
 	}
 
@@ -2200,11 +2354,13 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		if (!templates?.length) return;
 		let added = false;
 		for (const fc of templates) {
-			// Skip if column already exists
+			// Skip if column already exists (handles duplicate keys in saved state gracefully)
 			if (this.columns.find(c => c.data === fc.key)) continue;
 			const new_col = { data: fc.key, title: fc.label, type: 'text', width: 140, _is_formula_col: true };
 			this.columns.push(new_col);
-			if (this._master_columns) this._master_columns.push(new_col);
+			if (this._master_columns)   this._master_columns.push(new_col);
+			if (this._original_columns) this._original_columns.push(new_col); // keep in sync (blank cols do this too)
+			this._invalidate_col_map();
 			added = true;
 		}
 		if (added) {
@@ -2212,7 +2368,9 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			this.formula_bridge.reload(this.matrix);
 			this.hot.updateSettings({ columns: this.columns });
 		}
-		// Register formula templates in the map
+		// Register formula templates in the map.
+		// Each unique key gets exactly one entry — last-writer-wins for duplicates,
+		// but duplicates should never occur after the _formula_col_count fix below.
 		this._formula_col_map = this._formula_col_map || new Map();
 		for (const fc of templates) {
 			const col_idx = this.columns.findIndex(c => c.data === fc.key);
@@ -2221,6 +2379,16 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		// Apply formulas to all currently loaded rows
 		const total = (this.list_view.data?.length || 0) - 1;
 		if (total >= 0) this._reapply_formula_cols(0, total);
+
+		// ── CRITICAL: advance the key counter past all restored keys ──────────
+		// Without this, the next "Add Formula Column" restarts at __fml_1__ and
+		// generates a duplicate key, causing columns to vanish or show wrong data.
+		let max_idx = this._formula_col_count || 0;
+		for (const fc of templates) {
+			const m = /^__fml_(\d+)__$/.exec(fc.key || "");
+			if (m) max_idx = Math.max(max_idx, parseInt(m[1], 10));
+		}
+		this._formula_col_count = max_idx;
 	}
 
 	// Persists formula column templates to user_settings so they survive page reload.
@@ -2232,6 +2400,18 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			if (col) templates.push({ key: col.data, label: col.title, formula });
 		}
 		frappe.model.user_settings.save(this.doctype, 'excel_formula_col_templates', templates);
+
+		// Also sync formula_columns into the active sheet state so that workbook
+		// saves always include the current formula columns without requiring a
+		// separate "save workbook" click after adding/editing a formula column.
+		const sheet = this.sheet_manager?.get_current();
+		if (sheet) {
+			sheet.formula_columns = templates.map(t => ({
+				key:              t.key,
+				label:            t.label,
+				formula_template: t.formula,
+			}));
+		}
 	}
 
 	// ── Blank column persistence + lazy-fill ─────────────────────────────────
@@ -2254,6 +2434,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			this.columns.push(new_col);
 			if (this._master_columns) this._master_columns.push(new_col);
 			if (this._original_columns) this._original_columns.push(new_col);
+			this._invalidate_col_map();
 			added = true;
 		}
 		// Rebuild HF matrix if any new col added
@@ -2323,6 +2504,13 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	// Applies border stored at format_store key "h_<col>" to the <th> element.
 	_apply_col_header_format(TH, col) {
 		if (col < 0) return; // row-number corner cell
+		// Highlight mandatory temp columns added during bulk duplicate
+		if (this.columns[col]?._is_bulk_temp) {
+			const _dark = document.documentElement.getAttribute("data-theme") === "dark";
+			TH.style.background = _dark ? "#2c1010" : "#fff0f0";
+			TH.style.color      = _dark ? "#f48a8a" : "#c62828";
+			return;
+		}
 		const key = `h_${col}`;
 		const fmt = this.format_store[key];
 		if (!fmt?.borders) return;
@@ -2453,7 +2641,26 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	 *   - Stops when server returns fewer rows than page_length (no more data)
 	 */
 	_on_scroll_vertical() {
-		if (this._loading_more || this._no_more_data || !this.hot) return;
+		// Don't trigger infinite-scroll loads while bulk-add rows are pending —
+		// lv.data.length includes blank rows so lv.start would be wrong, and the
+		// server response would overwrite / displace the unsaved blank rows.
+		if (this._bulk_add_start >= 0) return;
+		if (!this.hot) return;
+
+		// DuckDB query sheet — delegate to its own infinite-scroll handler
+		const _cur_sheet = this.sheet_manager?.get_current();
+		if (_cur_sheet?.query_ast) {
+			this._on_scroll_query_sheet(_cur_sheet);
+			return;
+		}
+
+		// Secondary sheet — delegate to its own infinite-scroll handler
+		if (_cur_sheet?.doctype && _cur_sheet.doctype !== this.doctype) {
+			this._on_scroll_secondary_sheet(_cur_sheet);
+			return;
+		}
+
+		if (this._loading_more || this._no_more_data) return;
 
 		const lv           = this.list_view;
 		const total_loaded = lv.data?.length || 0;
@@ -2504,6 +2711,149 @@ frappe.views.ExcelBoard = class ExcelBoard {
 
 			lv.refresh();
 		}, 150);
+	}
+
+	/**
+	 * Scroll handler for secondary sheets — delegates to _sec_sheet_fetch.
+	 * Called from _on_scroll_vertical when active sheet is a non-base DocType.
+	 */
+	_on_scroll_secondary_sheet(sheet) {
+		if (this._sec_sheet_loading || sheet._no_more_data) return;
+		const h = this.$hot_container?.[0]?.querySelector(".wtHolder");
+		if (h && h.scrollHeight - h.scrollTop - h.clientHeight >= 200) return;
+		clearTimeout(this._sec_scroll_timer);
+		this._sec_scroll_timer = setTimeout(() => this._sec_sheet_fetch(sheet), 150);
+	}
+
+	/**
+	 * Fetch next page for a secondary sheet and keep filling until container overflows.
+	 * Uses its own _sec_sheet_loading flag so it never conflicts with base-sheet logic.
+	 */
+	_sec_sheet_fetch(sheet) {
+		if (this._sec_sheet_loading || sheet._no_more_data) return;
+		// Guard: abort if user switched away
+		if (this.sheet_manager?.get_current()?.id !== sheet.id) return;
+
+		this._sec_sheet_loading = true;
+		this._show_load_more_indicator(true);
+
+		const prev_len  = sheet.data?.length || 0;
+		const page_size = 20; // Fixed for secondary sheets — list_view.page_length belongs to base sheet
+
+		frappe.call({
+			method: "frappe.client.get_list",
+			args: {
+				doctype:    sheet.doctype,
+				fields:     sheet._fetch_fields || ["name"],
+				filters:    sheet.filters || [],
+				order_by:   sheet.sort_by
+					? `${sheet.sort_by.field} ${sheet.sort_by.order}`
+					: "modified desc",
+				limit:      page_size,
+				limit_start: prev_len,
+			},
+			error: () => {
+				this._sec_sheet_loading = false;
+				this._show_load_more_indicator(false);
+			},
+			callback: (r) => {
+				this._sec_sheet_loading = false;
+				this._show_load_more_indicator(false);
+
+				const new_rows = r.message || [];
+				if (new_rows.length < page_size) sheet._no_more_data = true;
+				if (!new_rows.length) return;
+
+				sheet.data = [...(sheet.data || []), ...new_rows];
+				if (this.sheet_manager?.get_current()?.id !== sheet.id) return;
+
+				this.hot.loadData(sheet.data);
+				// Re-apply smart lookups to include the newly appended rows
+				this._reapply_smart_lookups?.();
+
+				// After render: keep filling if container still has room, else stop
+				if (!sheet._no_more_data) {
+					// Short delay so HOT paints before we re-check scrollability
+					setTimeout(() => {
+						const h = this.$hot_container?.[0]?.querySelector(".wtHolder");
+						// Container not yet scrollable → keep filling; scrollable → wait for user scroll
+						if (!h || h.scrollHeight - h.clientHeight < 200) {
+							this._sec_sheet_fetch(sheet);
+						}
+					}, 100);
+				}
+			},
+		});
+	}
+
+	/**
+	 * Scroll handler for DuckDB query sheets — same bottom-proximity guard as secondary sheets.
+	 */
+	_on_scroll_query_sheet(sheet) {
+		if (this._sec_sheet_loading || sheet._no_more_data || sheet._rerun_in_progress) return;
+		const h = this.$hot_container?.[0]?.querySelector(".wtHolder");
+		if (h && h.scrollHeight - h.scrollTop - h.clientHeight >= 200) return;
+		clearTimeout(this._sec_scroll_timer);
+		this._sec_scroll_timer = setTimeout(() => this._query_sheet_fetch(sheet), 150);
+	}
+
+	/**
+	 * Fetch next page for a DuckDB query sheet.
+	 * Re-runs the stored AST with offset = current row count, appends results.
+	 * Uses the same _sec_sheet_loading flag so it never conflicts with base/secondary sheet loads.
+	 */
+	async _query_sheet_fetch(sheet) {
+		if (this._sec_sheet_loading || sheet._no_more_data || sheet._rerun_in_progress) return;
+		if (this.sheet_manager?.get_current()?.id !== sheet.id) return;
+
+		this._sec_sheet_loading = true;
+		this._show_load_more_indicator(true);
+
+		try {
+			const engine = frappe.views.excel?.duckdb_v2;
+			if (!engine) return;
+
+			const { QueryAST } = frappe.views.excel;
+			const plain = JSON.parse(sheet.query_ast);
+			const ast   = (QueryAST && typeof QueryAST === "function")
+				? Object.assign(new QueryAST(), plain)
+				: plain;
+
+			const PAGE_SIZE = 100;
+			ast.offset = sheet.data?.length || 0;
+			ast.limit  = PAGE_SIZE;
+
+			const { headers, rows } = await engine.run_ast(ast);
+
+			if (!rows.length) {
+				sheet._no_more_data = true;
+				return;
+			}
+
+			const new_rows = rows.map(r => {
+				const obj = {};
+				headers.forEach((h, i) => { obj[h] = r[i] ?? ""; });
+				return obj;
+			});
+			sheet.data = [...(sheet.data || []), ...new_rows];
+			if (rows.length < PAGE_SIZE) sheet._no_more_data = true;
+
+			if (this.sheet_manager?.get_current()?.id !== sheet.id) return;
+			this.hot?.loadData(sheet.data);
+
+			// Keep filling if the container isn't scrollable yet
+			if (!sheet._no_more_data) {
+				setTimeout(() => {
+					const h = this.$hot_container?.[0]?.querySelector(".wtHolder");
+					if (!h || h.scrollHeight - h.clientHeight < 200) this._query_sheet_fetch(sheet);
+				}, 100);
+			}
+		} catch (e) {
+			console.error("[ExcelView] _query_sheet_fetch failed:", e);
+		} finally {
+			this._sec_sheet_loading = false;
+			this._show_load_more_indicator(false);
+		}
 	}
 
 	_show_load_more_indicator(show) {
@@ -2742,6 +3092,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 
 				this.columns.push(new_col);
 				this._master_columns.push(new_col); // keep master in sync
+				this._invalidate_col_map();
 
 				// Seed empty value into every data row so HOT can read/write the key
 				(this.list_view.data || []).forEach((row) => {
@@ -2800,6 +3151,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 				this.columns.splice(insert_at, 0, new_col);
 				this._master_columns.splice(insert_at, 0, new_col);
 				if (this._original_columns) this._original_columns.splice(insert_at, 0, new_col);
+				this._invalidate_col_map();
 
 				(this.list_view.data || []).forEach((row) => { row[key] = ""; });
 
@@ -2842,6 +3194,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			const c = to_remove[i];
 			const key = removed_keys[i];
 			this.columns.splice(c, 1);
+			this._invalidate_col_map();
 			const mi = this._master_columns.findIndex(col => col.data === key);
 			if (mi !== -1) this._master_columns.splice(mi, 1);
 			if (this._original_columns) {
@@ -2883,11 +3236,32 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		// Remove in reverse order so earlier indices stay valid
 		[...to_remove].reverse().forEach((c) => {
 			const key = this.columns[c].data;
+			// Remove from _formula_col_map before splicing (index still valid here)
+			if (this._formula_col_map) this._formula_col_map.delete(c);
 			this.columns.splice(c, 1);
+			this._invalidate_col_map();
 			// Also remove from master list
 			this._master_columns = this._master_columns.filter((col) => col.data !== key);
+			if (this._original_columns) this._original_columns = this._original_columns.filter((col) => col.data !== key);
 			(this.list_view.data || []).forEach((row) => delete row[key]);
 		});
+
+		// Rebuild _formula_col_map with updated indices after splice
+		if (this._formula_col_map?.size) {
+			const rebuilt = new Map();
+			for (const [old_idx, formula] of this._formula_col_map) {
+				const col = this.columns[old_idx];
+				if (col?._is_formula_col) rebuilt.set(old_idx, formula);
+			}
+			this._formula_col_map = rebuilt;
+		}
+
+		// Persist removal — save empty array if no formula cols remain
+		if (this._formula_col_map?.size) {
+			this._save_formula_col_settings();
+		} else {
+			frappe.model.user_settings.save(this.doctype, 'excel_formula_col_templates', []);
+		}
 
 		// Sync HyperFormula + HOT
 		this.matrix = this.data_manager.to_matrix(this.list_view.data, this.columns);
@@ -3281,6 +3655,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 				};
 				this.columns.push(col);
 				this._master_columns.push(col);
+				this._invalidate_col_map();
 			});
 		});
 
@@ -3546,15 +3921,38 @@ frappe.views.ExcelBoard = class ExcelBoard {
 
 		// Enrich the correct source data array: src_sheet.data for non-base lookups, list_view.data for base.
 		const _slk_src_data = this._slk_src_data(cfg);
-		_slk_src_data.forEach(row => {
-			const key = String(row[cfg.src_field] ?? "").trim().toLowerCase();
-			const tr = tgt_map.get(key);
-			cfg.return_fields.forEach(f => {
-				row[`_slk_${f.fieldname}`] = tr ? (tr[f.fieldname] ?? "") : "";
+
+		const _apply_join = () => {
+			_slk_src_data.forEach(row => {
+				const key = String(row[cfg.src_field] ?? "").trim().toLowerCase();
+				const tr = tgt_map.get(key);
+				cfg.return_fields.forEach(f => {
+					row[`_slk_${f.fieldname}`] = tr ? (tr[f.fieldname] ?? "") : "";
+				});
 			});
-		});
-		this._slk_ensure_cols(cfg);
-		this.hot?.render();
+			this._slk_ensure_cols(cfg);
+			this.hot?.render();
+		};
+
+		// Join key missing in secondary DocType sheet data — fetch it first
+		const src_sheet = cfg.src_sheet_id ? this.sheet_manager?._sheets?.get(cfg.src_sheet_id) : null;
+		const join_key_missing = src_sheet?.doctype
+			&& _slk_src_data.length > 0
+			&& !(cfg.src_field in _slk_src_data[0]);
+		if (join_key_missing) {
+			frappe.db.get_list(src_sheet.doctype, { fields: ["name", cfg.src_field], limit: 0 })
+				.then(rows => {
+					const key_map = new Map(rows.map(r => [r.name, r[cfg.src_field] ?? ""]));
+					_slk_src_data.forEach(row => { row[cfg.src_field] = key_map.get(row.name) ?? ""; });
+					// Also persist to _fetch_fields so future appends include it
+					if (src_sheet._fetch_fields && !src_sheet._fetch_fields.includes(cfg.src_field)) {
+						src_sheet._fetch_fields.push(cfg.src_field);
+					}
+					_apply_join();
+				});
+		} else {
+			_apply_join();
+		}
 	}
 
 	/** Perform the join using the saved _value_cache (offline / blank-sheet fallback). */
@@ -3577,36 +3975,74 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	 * Base lookups fall back to list_view.data.
 	 */
 	_slk_src_data(cfg) {
-		if (cfg.src_sheet_id) {
-			const src = this.sheet_manager?._sheets?.get(cfg.src_sheet_id);
-			if (src?.data?.length) return src.data;
+		// No src sheet identified → base-sheet lookup, always use list_view.data
+		if (!cfg.src_sheet_id && !cfg.src_sheet_label && !cfg.src_sheet_doctype) {
+			return this.list_view?.data || [];
 		}
-		return this.list_view?.data || [];
+		const sm = this.sheet_manager;
+		// Fast path: ID still valid (same session)
+		let src = sm?._sheets?.get(cfg.src_sheet_id);
+		// Fallback: ID is stale (page reload) — find by persistent label/doctype
+		if (!src && (cfg.src_sheet_label || cfg.src_sheet_doctype)) {
+			const base_id = sm?._get_sheet0_id?.();
+			src = [...(sm?._sheets?.values() || [])].find(s =>
+				s.id !== base_id && (
+					(cfg.src_sheet_label   && s.label   === cfg.src_sheet_label) ||
+					(cfg.src_sheet_doctype && s.doctype === cfg.src_sheet_doctype)
+				)
+			);
+			if (src) cfg.src_sheet_id = src.id; // re-sync so next call hits Map directly
+		}
+		if (src?.data?.length) return src.data;
+		return []; // src sheet identified but not loaded yet — join will be deferred
 	}
 
 	/** Ensure _slk_* columns exist on the correct sheet (src_sheet.columns_config or _master_columns). */
 	_slk_ensure_cols(cfg) {
 		const sm = this.sheet_manager;
-		// Non-base lookup → add columns to the src sheet's columns_config only (not _master_columns)
-		if (cfg.src_sheet_id) {
-			const src = sm?._sheets?.get(cfg.src_sheet_id);
+		// Non-base lookup → add columns to the src sheet's column list (not _master_columns)
+		if (cfg.src_sheet_id || cfg.src_sheet_label) {
+			let src = sm?._sheets?.get(cfg.src_sheet_id);
+			if (!src && cfg.src_sheet_label) {
+				const base_id = sm?._get_sheet0_id?.();
+				src = [...(sm?._sheets?.values() || [])].find(s =>
+					s.id !== base_id && s.label === cfg.src_sheet_label
+				);
+				if (src) cfg.src_sheet_id = src.id;
+			}
 			if (!src) return;
-			const existing = new Set((src.columns_config || []).map(c => c.data));
+			// Secondary DocType sheets use _columns; report/blank sheets use columns_config
+			const col_list = src._columns || src.columns_config;
+			if (!col_list) return;
+			const existing = new Set(col_list.map(c => c.data));
 			let changed = false;
 			cfg.return_fields.forEach(f => {
 				const key = `_slk_${f.fieldname}`;
 				if (!existing.has(key)) {
-					src.columns_config = [...(src.columns_config || []), {
+					const new_col = {
 						data: key,
 						title: `${f.label} [${cfg.tgt_sheet_label}]`,
 						readOnly: true,
 						_is_lookup_col: true,
-					}];
+					};
+					col_list.push(new_col);
+					// Mirror onto columns_config for persistence
+					if (src._columns && src._columns !== src.columns_config) {
+						src.columns_config = [...(src.columns_config || []), new_col];
+					}
 					existing.add(key);
 					changed = true;
 				}
 			});
-			if (changed && sm?.get_current()?.id === src.id) sm._apply_sheet(src);
+			if (changed && sm?.get_current()?.id === src.id) {
+				if (src._columns) {
+					this.columns = src._columns;
+					this.hot?.updateSettings({ columns: this.columns });
+					this.hot?.render();
+				} else {
+					sm._apply_sheet(src);
+				}
+			}
 			return;
 		}
 		// Base lookup → add to _master_columns
@@ -3660,11 +4096,33 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		);
 		this._ct_fieldnames = fieldnames.filter(f => f.includes("__"));
 
+		// ── Preserve virtual column dependencies ──────────────────────────────
+		// _inject_meta_column / _inject_social_column need their real field siblings
+		// in _master_columns to fire. If the current board has active virtual cols,
+		// auto-merge their backing fields into the effective list so rebuilding
+		// the columns doesn't silently drop them (e.g. when user adds a new field
+		// via the picker without noticing the individual meta/social fields).
+		const _META_FIELDS   = ["owner", "creation", "modified_by", "modified"];
+		const _SOCIAL_FIELDS = ["_user_tags", "_comments", "_assign", "_liked_by", "docstatus", "idx"];
+		const _had_meta   = this._master_columns?.some(c => c.data === "_meta");
+		const _had_social = this._master_columns?.some(c => c.data === "_social");
+
+		const effective_regular = [...regular];
+		if (_had_meta) {
+			_META_FIELDS.forEach(f => { if (!effective_regular.includes(f)) effective_regular.push(f); });
+		}
+
 		// column_manager gets ALL fields (regular + CT) for column config
 		this.column_manager.fields = [
-			...regular.map(f => [f, this.doctype]),
+			...effective_regular.map(f => [f, this.doctype]),
 			...this._ct_fieldnames.map(f => [f, this.doctype]),
 		];
+		if (_had_social) {
+			const _cm_keys = new Set(this.column_manager.fields.map(([fn]) => fn));
+			_SOCIAL_FIELDS.forEach(f => {
+				if (!_cm_keys.has(f)) this.column_manager.fields.push([f, this.doctype]);
+			});
+		}
 
 		// Recompute columns + master list, then re-apply any persisted hidden cols
 		this.columns = this.column_manager.get_columns();
@@ -3711,8 +4169,14 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		// doesn't know about CT composite fieldnames (table__child).
 		this.list_view.fields = [
 			["name", this.doctype],
-			...regular.map(f => [f, this.doctype]),
+			...effective_regular.map(f => [f, this.doctype]),
 		];
+		if (_had_social) {
+			const _lv_keys = new Set(this.list_view.fields.map(([fn]) => fn));
+			_SOCIAL_FIELDS.forEach(f => {
+				if (!_lv_keys.has(f)) this.list_view.fields.push([f, this.doctype]);
+			});
+		}
 
 		if (silent) return;
 
@@ -3833,6 +4297,80 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	// ── Public API ────────────────────────────────────────────────────────────
 
 	/**
+	 * Register the realtime handler for live grid updates.
+	 * Called once from the constructor AND by ExcelView.setup_realtime_updates()
+	 * after every refresh() — Frappe calls frappe.realtime.off("list_update")
+	 * in setup_realtime_updates(), so we must re-register each time.
+	 *
+	 * Case A: base doctype (e.g. Customer) saved → refresh grid rows.
+	 *   NOTE: Frappe's process_document_refreshes() has a route guard that
+	 *   returns early for ExcelView (route is /view/excel, not /List/...) and
+	 *   then calls disable_realtime_updates().  ExcelView overrides that to
+	 *   prevent doctype_unsubscribe, but render_list() is never reached.
+	 *   We therefore handle Case A here with list_view.refresh().
+	 *
+	 * Case B: formula-referenced doctype (e.g. Sales Order) saved → invalidate
+	 *   the client-side formula cache + re-evaluate all formula columns.
+	 */
+	_register_formula_realtime() {
+		if (this._destroyed) return;
+		// De-dupe: remove any previously registered instance
+		if (this._formula_realtime_handler) {
+			frappe.realtime.off("list_update", this._formula_realtime_handler);
+		}
+		this._formula_realtime_handler = (data) => {
+			if (this._destroyed) return;
+			const updated_doctype = typeof data === "string" ? data : data?.doctype;
+			if (!updated_doctype) return;
+
+			// ── Case A: base doctype row changed → refresh grid ───────────────
+			if (updated_doctype === this.doctype) {
+				clearTimeout(this._base_realtime_timer);
+				this._base_realtime_timer = setTimeout(() => {
+					if (!this._destroyed) {
+						// Reset no_change throttle — we know data changed so force a fresh fetch
+						this.list_view.last_args = null;
+						this.list_view.refresh();
+					}
+				}, 800);
+			}
+
+			// ── Case B: formula-referenced doctype changed → invalidate cache ─
+			if (this._formula_col_map?.size) {
+				const fm = frappe.views.excel.formula_manager;
+				if (fm) {
+					const prefixes = [
+						`FRAPPE_SUM:${updated_doctype}:`,
+						`FRAPPE_COUNT:${updated_doctype}:`,
+						`FRAPPE_AVG:${updated_doctype}:`,
+						`FRAPPE_MAX:${updated_doctype}:`,
+						`FRAPPE_MIN:${updated_doctype}:`,
+						`FRAPPE_GET:${updated_doctype}:`,
+						`DYN_SUM:${updated_doctype}:`,
+						`DYN_COUNT:${updated_doctype}:`,
+						`DYN_AVG:${updated_doctype}:`,
+					];
+					let had_cached = false;
+					for (const pfx of prefixes) {
+						for (const key of fm._cache.keys()) {
+							if (key.startsWith(pfx)) { fm._cache.delete(key); had_cached = true; }
+						}
+					}
+					if (had_cached) {
+						clearTimeout(this._formula_realtime_timer);
+						this._formula_realtime_timer = setTimeout(() => {
+							if (this._destroyed) return;
+							const total = (this.list_view.data?.length || 0) - 1;
+							if (total >= 0) this._reapply_formula_cols(0, total);
+						}, 600);
+					}
+				}
+			}
+		};
+		frappe.realtime.on("list_update", this._formula_realtime_handler);
+	}
+
+	/**
 	 * Reload grid with fresh data from the server.
 	 */
 	refresh(new_data, { append = false } = {}) {
@@ -3843,15 +4381,18 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			this.$inline_insert_bar = null;
 		}
 
-		// Blank-sheet guard: when the user is on a blank sheet (A-Z columns, no
-		// Frappe data), a background list_view.refresh() may be triggered to keep
-		// charts live (sheet_manager._apply_sheet).  We must NOT push the fetched
-		// Sales Order rows into the HOT instance — that would clobber the blank
-		// grid.  Just rerender visible charts and bail out.
-		if (this.sheet_manager?.get_current()?.is_blank) {
+		// Blank / Dashboard guard: never push list_view data into HOT when the user
+		// is on a blank sheet or a dashboard sheet.  For blank sheets, background
+		// refresh keeps charts live.  For dashboard sheets, the HOT container is
+		// hidden — let dashboard_manager handle its own data refresh cycle.
+		const _guard_sheet = this.sheet_manager?.get_current();
+		if (_guard_sheet?.is_blank) {
 			setTimeout(() => this.chart_manager?.rerender_all_visible(), 0);
 			return;
 		}
+		if (_guard_sheet?.is_dashboard) return;
+		// Secondary sheet active — base list_view data must not overwrite it
+		if (_guard_sheet?.doctype && _guard_sheet.doctype !== this.doctype) return;
 
 		// Fresh refresh (filter change, sort etc.) → reset infinite-scroll state
 		if (!append) {
@@ -3949,11 +4490,10 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		// stay in sync after filters change, new records arrive, etc.
 		setTimeout(() => this.chart_manager?.rerender_all_visible(), 0);
 
-		// V2.5 — Keep the active non-blank sheet's data pointer current so that
-		// switch_to() uses _apply_sheet() (direct swap) rather than _lazy_fetch()
-		// (re-fetch) when the user returns to this tab later.
+		// V2.5 — Keep the active non-blank, non-dashboard sheet's data pointer current
+		// so switch_to() uses _apply_sheet() (direct swap) rather than _lazy_fetch().
 		const _sm_cur = this.sheet_manager?.get_current();
-		if (_sm_cur && !_sm_cur.is_blank) _sm_cur.data = new_data;
+		if (_sm_cur && !_sm_cur.is_blank && !_sm_cur.is_dashboard) _sm_cur.data = new_data;
 	}
 
 	/**
@@ -3988,6 +4528,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 				};
 				this.columns.push(col);
 				this._master_columns.push(col);
+				this._invalidate_col_map();
 				// Seed empty value so HOT rows have the key defined
 				(this.list_view.data || []).forEach(row => { row[key] = ""; });
 				added++;
@@ -4123,7 +4664,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 				<button class="ev-iib-save btn btn-xs btn-primary">${__("Save Row")}</button>
 				<button class="ev-iib-cancel btn btn-xs">${__("✕ Cancel")}</button>
 			</div>
-		`).prependTo(this.$grid_main);
+		`).appendTo(document.body);
 
 		this.$inline_insert_bar.on("click", ".ev-iib-save",      () => this._finish_inline_insert());
 		this.$inline_insert_bar.on("click", ".ev-iib-cancel",    () => this._cancel_inline_insert());
@@ -4311,9 +4852,10 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			// Build minimal columns from doctype meta (lazy)
 			frappe.model.with_doctype(sheet.doctype, () => {
 				const meta = frappe.get_meta(sheet.doctype);
-				const show_fields = meta.fields
-					.filter((f) => !["Section Break", "Column Break", "HTML", "Table", "Tab Break"].includes(f.fieldtype))
-					.slice(0, 12);
+				const _NON_DATA = new Set(["Section Break", "Column Break", "HTML", "Table", "Tab Break", "Fold", "Heading"]);
+				// Mirror Frappe's Report/List view: show only in_list_view fields; fall back to first 5
+				let show_fields = meta.fields.filter(f => f.in_list_view && !_NON_DATA.has(f.fieldtype));
+				if (!show_fields.length) show_fields = meta.fields.filter(f => !_NON_DATA.has(f.fieldtype)).slice(0, 5);
 
 				const cols = [
 					{
@@ -4371,6 +4913,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		lookup_cols.forEach((col) => {
 			if (!this.columns.find((c) => c.data === col.data)) {
 				this.columns.push(col);
+				this._invalidate_col_map();
 				this._master_columns.push(col);
 			}
 		});
@@ -4380,6 +4923,437 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this.formula_bridge.reload(this.matrix);
 		this.hot.updateSettings({ columns: this.columns });
 		this.hot.loadData(data);
+	}
+
+	// ── Bulk Add ──────────────────────────────────────────────────────────────
+	// Lets users fill N blank rows directly in the grid and create all of them
+	// as Frappe documents in one shot — replaces the export → edit → import flow.
+
+	/**
+	 * Enter bulk-add mode: append N blank rows to the grid.
+	 * HOT's native Ctrl+V paste works immediately — users can paste from Excel.
+	 * @param {number} n  Number of blank rows to add (default 10).
+	 */
+	_enter_bulk_add_mode(n = 10) {
+		if (this._bulk_add_start >= 0) return; // already active
+
+		// Build a blank row object matching the current column schema
+		const _blank_row = () => {
+			const row = {};
+			this.columns.forEach((col) => { if (col.data) row[col.data] = ""; });
+			return row;
+		};
+
+		this._bulk_add_start = this.list_view.data.length;
+		for (let i = 0; i < n; i++) this.list_view.data.push(_blank_row());
+
+		// HOT afterRenderer hook: tint bulk rows green
+		const is_dark = () => document.documentElement.getAttribute("data-theme") === "dark";
+		this._bulk_renderer_hook = (td, row) => {
+			if (row < this._bulk_add_start) return;
+			td.style.backgroundColor = is_dark() ? "#0c2010" : "#f0faf0";
+		};
+		this.hot.addHook("afterRenderer", this._bulk_renderer_hook);
+
+		this.hot.loadData(this.list_view.data);
+		this._show_bulk_bar(n);
+
+		// Scroll to first bulk row so user sees it immediately
+		this.hot.scrollViewportTo(this._bulk_add_start, 0);
+		frappe.show_alert({
+			message: __(
+				"{0} blank rows added — fill them in or paste from Excel/Sheets (Ctrl+V)",
+				[n]
+			),
+			indicator: "green",
+		}, 4);
+	}
+
+	/**
+	 * Bulk-duplicate selected rows: fetches the full document for each source row
+	 * (so ALL saved fields — including mandatory ones not visible in the grid — are
+	 * captured), then enters bulk-add mode.
+	 *
+	 * Visible columns are pre-filled and remain editable.
+	 * Non-visible fields (mandatory fields, fetch_from values, etc.) are stored in
+	 * `row._hidden_fields` and silently merged back at `_collect_bulk_rows` time.
+	 * This covers both meta-defined `fetch_from` AND JS-defined `frappe.set_query`
+	 * relationships, because their resolved values are already persisted in the doc.
+	 *
+	 * @param {number[]} row_indices  Sorted array of data row indices to clone.
+	 */
+	async _bulk_duplicate(row_indices) {
+		if (this._bulk_add_start >= 0) {
+			frappe.show_alert({ message: __("Exit current bulk mode first (Cancel)"), indicator: "orange" }, 3);
+			return;
+		}
+
+		const SYSTEM = new Set(["name","creation","modified","modified_by","owner",
+			"docstatus","idx","_user_tags","_comments","_assign","_liked_by","_seen",
+			"amended_from","naming_series"]);
+
+		const data = this.list_view.data;
+		const valid_srcs = row_indices
+			.map(idx => data[idx])
+			.filter(r => r && !r._is_new && r.name);
+
+		if (!valid_srcs.length) {
+			frappe.show_alert({ message: __("No valid rows to duplicate"), indicator: "orange" }, 3);
+			return;
+		}
+
+		// Fetch each full document (parallel) so mandatory + fetch_from + JS-resolved
+		// fields are available even when those fields are not visible columns.
+		const full_map = new Map();
+		await Promise.all(
+			valid_srcs.map(src =>
+				frappe.call({ method: "frappe.client.get", args: { doctype: this.doctype, name: src.name } })
+					.then(r => { if (r.message?.name) full_map.set(r.message.name, r.message); })
+					.catch(() => {})
+			)
+		);
+		valid_srcs.forEach(src => { if (!full_map.has(src.name)) full_map.set(src.name, src); });
+
+		// ── Mandatory-field temp columns ──────────────────────────────────────
+		// If a doctype has mandatory scalar fields not currently visible in the grid,
+		// add them as temporary editable columns so the user can see and fill them
+		// before clicking Create. These columns are removed on Cancel/Create.
+		const meta = frappe.get_meta(this.doctype);
+		const SKIP_TYPES = new Set(["Section Break","Column Break","Tab Break","HTML",
+			"Heading","Button","Fold","Table","Table MultiSelect"]);
+		const visible_keys_before = new Set(this.columns.map(c => c.data).filter(Boolean));
+
+		const mandatory_extra = (meta?.fields || []).filter(f =>
+			f.reqd && f.fieldname && !f.hidden && !f.read_only &&
+			!SKIP_TYPES.has(f.fieldtype) && !visible_keys_before.has(f.fieldname)
+		);
+
+		if (mandatory_extra.length) {
+			this._bulk_dup_orig_columns = this.columns;
+
+			// ── Snapshot current column widths before updateSettings wipes them ──
+			// HOT 6.2.2 stores widths in plugin.manualColumnWidths[] (index-based).
+			// updateSettings({ columns: [...] }) resets this array, collapsing every
+			// column to auto-width and killing the horizontal scrollbar.
+			// We snapshot here and restore shifted by extra_count after the call.
+			const _rp = this.hot.getPlugin('manualColumnResize');
+			this._bulk_dup_orig_widths = _rp?.manualColumnWidths
+				? [..._rp.manualColumnWidths]
+				: null;
+
+			// Use proper column config per fieldtype so pickers/dropdowns work in temp cols.
+			const extra_cols = mandatory_extra.map(df => {
+				const col = frappe.views.excel.get_column_config(df, true);
+				return {
+					...col,
+					title:    `* ${__(df.label || df.fieldname)}`,
+					width:    Math.max(100, Math.min(180, ((df.label || df.fieldname).length * 9) + 20)),
+					readOnly:  false,
+					_readonly: false,
+					className: "",
+					_is_bulk_temp: true,
+				};
+			});
+			// Prepend so mandatory fields appear first — user sees them immediately
+			this.columns = [...extra_cols, ...this.columns];
+			// Backfill empty slots in ALL existing rows so HOT doesn't get confused
+			data.forEach(row => {
+				extra_cols.forEach(col => { if (!(col.data in row)) row[col.data] = ""; });
+			});
+		}
+
+		// ── Set up bulk-add mode ──────────────────────────────────────────────
+		const start = data.length;
+		this._bulk_add_start = start;
+
+		const is_dark = () => document.documentElement.getAttribute("data-theme") === "dark";
+		this._bulk_renderer_hook = (td, row) => {
+			if (row < start) return;
+			td.style.backgroundColor = is_dark() ? "#0c2010" : "#f0faf0";
+		};
+		this.hot.addHook("afterRenderer", this._bulk_renderer_hook);
+
+		// Recalculate visible keys after potential column expansion
+		const visible_keys = new Set(this.columns.map(c => c.data).filter(Boolean));
+
+		let added = 0;
+		for (const src of valid_srcs) {
+			const full = full_map.get(src.name) || src;
+			const row  = { _is_new: true };
+			this.columns.forEach(col => { if (col.data) row[col.data] = ""; });
+
+			const hidden = {};
+			for (const [k, v] of Object.entries(full)) {
+				if (SYSTEM.has(k) || k.startsWith("_")) continue;
+				// Skip null, empty, and complex types (arrays = child tables, objects = JSON fields)
+				if (v == null || v === "" || (typeof v === "object")) continue;
+				if (visible_keys.has(k)) {
+					row[k] = v;       // editable in the grid (including mandatory temp cols)
+				} else {
+					hidden[k] = v;    // non-visible non-mandatory: silently included at create
+				}
+			}
+			if (Object.keys(hidden).length) row._hidden_fields = hidden;
+			data.push(row);
+			added++;
+		}
+
+		this.hot.loadData(data);
+
+		// scrollViewportTo with snapToBottom=true forces scroll even when the target
+		// is already partially visible — ensures the last duplicate row is fully in view.
+		const _dup_last = start + added - 1;
+		const _scroll_once = () => {
+			this.hot.scrollViewportTo(_dup_last, 0, true);
+			this.hot.removeHook('afterRender', _scroll_once);
+		};
+		this.hot.addHook('afterRender', _scroll_once);
+
+		if (this._bulk_dup_orig_columns) {
+			// Build widths: prepended extra cols first, then original widths.
+			// Pass via manualColumnResize setting in the SAME updateSettings call —
+			// updateSettings({ columns }) resets the plugin's internal array, so
+			// supplying widths via a separate assignment (or a later render) is ignored.
+			// Including them in the same call forces the plugin to re-init with the
+			// correct values, which restores the horizontal scrollbar.
+			const extra_n      = this.columns.length - this._bulk_dup_orig_columns.length;
+			const extra_widths = this.columns.slice(0, extra_n).map(c => c.width || 120);
+			const combined_w   = this._bulk_dup_orig_widths
+				? [...extra_widths, ...this._bulk_dup_orig_widths]
+				: extra_widths;
+
+			// Hook registered above fires on the render HOT triggers internally here.
+			this.hot.updateSettings({ columns: this.columns, manualColumnResize: combined_w });
+		} else {
+			this.hot.render(); // trigger the scroll hook
+		}
+
+		this._show_bulk_bar(added);
+
+		frappe.show_alert({
+			message: __("{0} rows duplicated — edit inline then click Create", [added]),
+			indicator: "green",
+		}, 4);
+	}
+
+	/**
+	 * Enter bulk-add mode pre-populated with imported rows.
+	 * Each row in `rows` is a field→value dict already mapped to this doctype's fields.
+	 * @param {Object[]} rows
+	 */
+	_enter_bulk_add_mode_with_data(rows) {
+		if (this._bulk_add_start >= 0) {
+			frappe.confirm(__("Bulk mode is already active. Replace it with the imported data?"), () => {
+				this._exit_bulk_add_mode();
+				this._enter_bulk_add_mode_with_data(rows);
+			});
+			return;
+		}
+
+		const _blank_row = () => {
+			const row = {};
+			this.columns.forEach(col => { if (col.data) row[col.data] = ""; });
+			return row;
+		};
+
+		this._bulk_add_start = this.list_view.data.length;
+
+		const is_dark = () => document.documentElement.getAttribute("data-theme") === "dark";
+		this._bulk_renderer_hook = (td, row) => {
+			if (row < this._bulk_add_start) return;
+			td.style.backgroundColor = is_dark() ? "#0c2010" : "#f0faf0";
+		};
+		this.hot.addHook("afterRenderer", this._bulk_renderer_hook);
+
+		for (const src_row of rows) {
+			const row = _blank_row();
+			row._is_new = true;
+			for (const [k, v] of Object.entries(src_row)) {
+				if (k in row) row[k] = v;
+			}
+			this.list_view.data.push(row);
+		}
+
+		this.hot.loadData(this.list_view.data);
+		this._show_bulk_bar(rows.length);
+		this._update_bulk_bar();
+		this.hot.scrollViewportTo(this._bulk_add_start, 0);
+		frappe.show_alert({
+			message: __("{0} rows imported — review and click Create", [rows.length]),
+			indicator: "green",
+		}, 4);
+	}
+
+	/** Exit bulk-add mode without creating: remove pending rows and clean up. */
+	_exit_bulk_add_mode() {
+		if (this._bulk_add_start < 0) return;
+		this.list_view.data.splice(this._bulk_add_start);
+		this._bulk_add_start = -1;
+
+		if (this._bulk_renderer_hook) {
+			this.hot.removeHook("afterRenderer", this._bulk_renderer_hook);
+			this._bulk_renderer_hook = null;
+		}
+
+		// Restore original columns if temporary mandatory columns were added for duplicate
+		if (this._bulk_dup_orig_columns) {
+			this.columns = this._bulk_dup_orig_columns;
+			this._bulk_dup_orig_columns = null;
+			const orig_w = this._bulk_dup_orig_widths;
+			this._bulk_dup_orig_widths = null;
+			// Same pattern as _bulk_duplicate: pass widths via manualColumnResize in
+			// the same updateSettings call so the plugin re-inits with correct values.
+			this.hot.updateSettings({ columns: this.columns, manualColumnResize: orig_w || true });
+		}
+
+		this.hot.loadData(this.list_view.data);
+		this.$bulk_bar?.remove();
+		this.$bulk_bar = null;
+	}
+
+	/** Render the floating action bar shown while bulk-add is active. */
+	_show_bulk_bar(n) {
+		this.$bulk_bar?.remove();
+		this.$bulk_bar = $(`
+			<div class="ev-bulk-bar">
+				<span class="ev-bulk-bar__icon">✨</span>
+				<span class="ev-bulk-bar__info">${__("{0} rows added — 0 ready", [n])}</span>
+				<span class="ev-bulk-bar__hint">${__("Ctrl+V pastes from Excel/Sheets")}</span>
+				<button class="ev-bulk-bar__create btn btn-primary btn-sm" disabled>
+					${__("Create 0 Records")}
+				</button>
+				<button class="ev-bulk-bar__cancel btn btn-sm">✕ ${__("Cancel")}</button>
+			</div>
+		`).appendTo(document.body);
+
+		this.$bulk_bar.on("click", ".ev-bulk-bar__create:not([disabled])", () => this._do_bulk_create());
+		this.$bulk_bar.on("click", ".ev-bulk-bar__cancel", () => this._exit_bulk_add_mode());
+	}
+
+	/** Recount filled rows and update the action bar label + button state. */
+	_update_bulk_bar() {
+		if (!this.$bulk_bar || this._bulk_add_start < 0) return;
+		const pending = this.list_view.data.slice(this._bulk_add_start);
+		// A row is "ready" if it has at least one non-virtual, non-hidden visible value
+		// OR has hidden_fields (from duplicate — always considered filled)
+		const filled  = pending.filter((row) =>
+			row._hidden_fields ||
+			Object.entries(row).some(([k, v]) => k !== "name" && !k.startsWith("_") && v != null && v !== "")
+		).length;
+
+		this.$bulk_bar.find(".ev-bulk-bar__info").text(
+			__("{0} rows — {1} ready", [pending.length, filled])
+		);
+		const $btn = this.$bulk_bar.find(".ev-bulk-bar__create");
+		$btn.text(__("Create {0} Record(s)", [filled]));
+		filled > 0 ? $btn.prop("disabled", false) : $btn.prop("disabled", true);
+	}
+
+	/**
+	 * Collect filled bulk rows as plain field-value dicts, stripping virtual cols
+	 * and skipping fully empty rows.
+	 *
+	 * For duplicate rows, `_hidden_fields` carries non-visible fields (mandatory
+	 * fields, fetch_from values resolved from saved docs). These are merged in at
+	 * the lowest priority so any user edits in visible columns take precedence.
+	 *
+	 * @returns {Array<Object>}
+	 */
+	_collect_bulk_rows() {
+		const _virtual = new Set(["_meta", "_social", "_is_new", "name"]);
+		return this.list_view.data
+			.slice(this._bulk_add_start)
+			.filter((row) =>
+				row._hidden_fields ||
+				Object.entries(row).some(([k, v]) => !_virtual.has(k) && !k.startsWith("_") && v != null && v !== "")
+			)
+			.map((row) => {
+				const clean = {};
+				// Hidden fields first (lowest priority — from the original saved doc)
+				if (row._hidden_fields) {
+					Object.entries(row._hidden_fields).forEach(([k, v]) => {
+						if (v != null && v !== "") clean[k] = v;
+					});
+				}
+				// Visible fields override hidden (user may have edited them)
+				Object.entries(row).forEach(([k, v]) => {
+					if (!_virtual.has(k) && !k.startsWith("_") && v != null && v !== "") {
+						clean[k] = v;
+					}
+				});
+				return clean;
+			});
+	}
+
+	/**
+	 * Create all filled bulk rows as Frappe documents.
+	 * Shows a progress dialog, then refreshes the list on completion.
+	 */
+	async _do_bulk_create() {
+		const rows = this._collect_bulk_rows();
+		if (!rows.length) return;
+
+		const $btn = this.$bulk_bar?.find(".ev-bulk-bar__create");
+		$btn?.prop("disabled", true).text(__("Creating…"));
+
+		try {
+			const r = await frappe.call({
+				method: "excel_view.api.bulk_create_records",
+				args:   { doctype: this.doctype, rows: JSON.stringify(rows) },
+			});
+
+			const { created = [], errors = [] } = r.message || {};
+
+			// Highlight error rows red in the grid
+			if (errors.length) {
+				errors.forEach(({ idx }) => {
+					const grid_row = this._bulk_add_start + idx;
+					// Mark row cells with a red tint via a one-shot afterRenderer
+					const _err_hook = (td, row) => {
+						if (row === grid_row) td.style.backgroundColor = "#fdecea";
+					};
+					this.hot.addHook("afterRenderer", _err_hook);
+				});
+				this.hot.render();
+			}
+
+			// Show result summary
+			if (created.length && !errors.length) {
+				frappe.show_alert({
+					message: __("{0} record(s) created successfully", [created.length]),
+					indicator: "green",
+				}, 4);
+				this._exit_bulk_add_mode();
+				this.list_view.refresh();
+			} else if (created.length && errors.length) {
+				frappe.msgprint({
+					title:   __("Partial Success"),
+					message: __(
+						"{0} record(s) created. {1} row(s) failed — they are highlighted red. Fix errors and try again.",
+						[created.length, errors.length]
+					),
+					indicator: "orange",
+				});
+				// Remove successfully created rows from bulk area, keep failed ones
+				const failed_idxs = new Set(errors.map((e) => e.idx));
+				const failed_rows = rows.filter((_, i) => failed_idxs.has(i));
+				this.list_view.data.splice(this._bulk_add_start);
+				failed_rows.forEach((row) => this.list_view.data.push(row));
+				this.hot.loadData(this.list_view.data);
+				this._update_bulk_bar();
+				this.list_view.refresh();
+			} else {
+				frappe.msgprint({
+					title:   __("All rows failed"),
+					message: errors.map((e) => `Row ${e.idx + 1}: ${e.message}`).join("<br>"),
+					indicator: "red",
+				});
+				$btn?.prop("disabled", false).text(__("Retry"));
+			}
+		} catch (e) {
+			frappe.show_alert({ message: __("Bulk create failed — see console"), indicator: "red" }, 4);
+			$btn?.prop("disabled", false).text(__("Retry"));
+		}
 	}
 
 	/**
@@ -4392,6 +5366,13 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this._pending_join_config = null;
 		$(document).off("keydown.ev");
 		this._resize_observer?.disconnect();
+		// Remove formula-cache realtime listener
+		if (this._formula_realtime_handler) {
+			frappe.realtime.off("list_update", this._formula_realtime_handler);
+			this._formula_realtime_handler = null;
+		}
+		clearTimeout(this._formula_realtime_timer);
+		clearTimeout(this._base_realtime_timer);
 		// Remove infinite-scroll listener
 		if (this._scroll_listener) {
 			this._scroll_listener.target.removeEventListener("scroll", this._scroll_listener.fn);
@@ -4402,6 +5383,9 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this.status_bar?.destroy();
 		this.workbook_manager?.destroy();
 		this.sheet_manager?.destroy();
+		this.dashboard_manager?.destroy();
+		// Exit bulk-add mode cleanly (removes pending rows + hooks)
+		if (this._bulk_add_start >= 0) this._exit_bulk_add_mode();
 		this.hot?.destroy();
 		this.hot = null;
 		this.$wrapper?.empty();

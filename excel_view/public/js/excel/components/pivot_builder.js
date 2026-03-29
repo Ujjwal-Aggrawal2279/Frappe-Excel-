@@ -190,9 +190,22 @@ frappe.views.excel.PivotBuilder = class PivotBuilder {
 			frappe.show_alert({ message: __("Add at least one Value field"), indicator: "orange" }, 3);
 			return;
 		}
+		const $out = this.$modal.find(".ev-pv-output");
+		$out.html(`<div class="ev-pv-loading"><div class="ev-pv-spinner"></div>${__("Computing…")}</div>`);
+
 		const data = this._get_active_data();
-		const html = this._render_pivot(data, this._row_fields, this._col_fields, this._val_configs);
-		this.$modal.find(".ev-pv-output").html(html);
+		const engine = frappe.views.excel.duckdb_engine;
+
+		engine.pivot(data, this._row_fields, this._col_fields, this._val_configs)
+			.then(result => {
+				if (!this.$modal.closest("body").length) return; // dialog closed
+				$out.html(this._render_from_result(result));
+			})
+			.catch(() => {
+				// Final fallback: synchronous JS render
+				const html = this._render_pivot(data, this._row_fields, this._col_fields, this._val_configs);
+				if (this.$modal.closest("body").length) $out.html(html);
+			});
 	}
 
 	// ── Insert to Sheet ──────────────────────────────────────────────────────
@@ -202,30 +215,43 @@ frappe.views.excel.PivotBuilder = class PivotBuilder {
 			frappe.show_alert({ message: __("Configure the pivot first"), indicator: "orange" }, 3);
 			return;
 		}
-		const result = this._compute_pivot_2d();
-		if (!result) return;
 
-		// Capture source sheet id BEFORE creating the pivot sheet (switch_to will change _active_id)
+		const data          = this._get_active_data();
 		const source_sheet_id = this.board.sheet_manager?._active_id || null;
+		const row_fields    = [...this._row_fields];
+		const col_fields    = [...this._col_fields];
+		const val_configs   = JSON.parse(JSON.stringify(this._val_configs));
 
-		const { col_configs, data_rows } = PivotBuilder._result_to_hot(result);
-		const new_sheet_id = this.board.sheet_manager?.add_blank_sheet_with_data("Pivot", col_configs, data_rows);
+		frappe.views.excel.duckdb_engine
+			.pivot(data, row_fields, col_fields, val_configs)
+			.then(result => {
+				if (!result?.headers?.length) return;
 
-		// Tag the new sheet with its pivot config for dynamic restore
-		if (new_sheet_id) {
-			const new_sheet = this.board.sheet_manager._sheets.get(new_sheet_id);
-			if (new_sheet) {
-				new_sheet.pivot_config = {
-					row_fields:     [...this._row_fields],
-					col_fields:     [...this._col_fields],
-					val_configs:    JSON.parse(JSON.stringify(this._val_configs)),
-					source_sheet_id,
-				};
-				// Persist immediately so workbook save picks it up
-				this.board.sheet_manager._auto_persist_sheets?.();
-			}
-		}
-		this.$modal.remove();
+				const hot_result = PivotBuilder._result_to_hot(result);
+				const new_sheet_id = this.board.sheet_manager?.add_blank_sheet_with_data(
+					"Pivot", hot_result.col_configs, hot_result.data_rows
+				);
+
+				if (new_sheet_id) {
+					const new_sheet = this.board.sheet_manager._sheets.get(new_sheet_id);
+					if (new_sheet) {
+						new_sheet.pivot_config = { row_fields, col_fields, val_configs, source_sheet_id };
+						this.board.sheet_manager._auto_persist_sheets?.();
+					}
+					const eng = result.engine === "duckdb" ? `⚡ DuckDB · ${result.query_ms}ms` : "JS";
+					frappe.show_alert({ message: `${__("Pivot inserted")} (${eng})`, indicator: "green" }, 3);
+				}
+			})
+			.catch(() => {
+				// Sync fallback
+				const result = this._compute_pivot_2d();
+				if (!result) return;
+				const hot_result = PivotBuilder._result_to_hot(result);
+				this.board.sheet_manager?.add_blank_sheet_with_data("Pivot", hot_result.col_configs, hot_result.data_rows);
+			})
+			.finally(() => {
+				if (this.$modal.closest("body").length) this.$modal.remove();
+			});
 	}
 
 	/** Compute pivot as { headers: string[], rows: (string|number)[][] } */
@@ -310,7 +336,41 @@ frappe.views.excel.PivotBuilder = class PivotBuilder {
 		];
 		rows.push(grand);
 
-		return { headers, rows };
+		return { headers, rows, row_field_count: row_fields.length, engine: "js", query_ms: 0 };
+	}
+
+	/** Render a pre-computed pivot result (from DuckDB or JS) as an HTML table. */
+	_render_from_result(result) {
+		if (!result?.headers?.length) {
+			return `<div style="padding:16px;color:var(--text-muted);font-size:13px">${__("No data to pivot")}</div>`;
+		}
+		const { headers, rows, row_field_count = 0, engine, query_ms } = result;
+
+		const badge = engine === "duckdb"
+			? `<div class="ev-pv-engine-badge ev-pv-engine-duck">⚡ DuckDB-WASM · ${query_ms}ms · ${rows.length - 1} ${__("groups")}</div>`
+			: `<div class="ev-pv-engine-badge ev-pv-engine-js">JS · ${rows.length - 1} ${__("groups")}</div>`;
+
+		const thead = headers.map(h =>
+			`<th class="ev-pv-th-col">${frappe.utils.escape_html(String(h))}</th>`
+		).join("");
+
+		const tbody = rows.map((row, ri) => {
+			const is_grand = ri === rows.length - 1;
+			const style    = is_grand ? "border-top:2px solid var(--border-color)" : "";
+			const tds = row.map((v, ci) => {
+				const is_num = ci >= row_field_count && !isNaN(Number(v)) && v !== "";
+				const align  = is_num ? "right" : "left";
+				const weight = (is_grand || ci < row_field_count) ? "font-weight:500" : "";
+				return `<td style="text-align:${align};${weight}">${frappe.utils.escape_html(String(v ?? ""))}</td>`;
+			}).join("");
+			return `<tr style="${style}">${tds}</tr>`;
+		}).join("");
+
+		return `${badge}
+			<table class="ev-pivot-table" style="border-collapse:collapse;font-size:12px;min-width:100%;margin-top:6px">
+				<thead><tr>${thead}</tr></thead>
+				<tbody>${tbody}</tbody>
+			</table>`;
 	}
 
 	/** Convert a compute() result to HOT col_configs + data_rows. */

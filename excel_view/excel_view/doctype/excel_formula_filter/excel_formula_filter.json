@@ -1,0 +1,44 @@
+{
+ "actions": [],
+ "creation": "2026-03-25 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "filter_key",
+  "filter_value"
+ ],
+ "fields": [
+  {
+   "fieldname": "filter_key",
+   "fieldtype": "Data",
+   "in_grid_view": 1,
+   "in_list_view": 1,
+   "label": "Filter Key",
+   "reqd": 1,
+   "columns": 4
+  },
+  {
+   "fieldname": "filter_value",
+   "fieldtype": "Data",
+   "in_grid_view": 1,
+   "in_list_view": 1,
+   "label": "Filter Value",
+   "reqd": 1,
+   "columns": 4
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "istable": 1,
+ "links": [],
+ "modified": "2026-03-25 12:00:01.000000",
+ "modified_by": "Administrator",
+ "module": "Excel View",
+ "name": "Excel Formula Filter",
+ "owner": "Administrator",
+ "permissions": [],
+ "sort_field": "creation",
+ "sort_order": "DESC",
+ "states": [],
+ "track_changes": 0
+}

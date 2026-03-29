@@ -1,61 +1,149 @@
-# Excel View for Frappe
+# Excel View for Frappe / ERPNext
 
-A full spreadsheet experience built into Frappe — edit, format, and analyze any DocType data in a familiar Excel-style grid, without leaving your ERP.
+> **"Talk with your data live"** — the only spreadsheet that speaks ERP natively, runs on your server, and writes back.
 
-Works on **vanilla Frappe** and optionally unlocks ERPNext-specific formula functions (`GL_BALANCE`, `STOCK_QTY`, `ITEM_PRICE`) when ERPNext is installed.
+A full spreadsheet experience built into Frappe — edit, format, analyze, join, query, and bulk-import any DocType data in a familiar Excel-style grid, without leaving your ERP. Works on **vanilla Frappe** and unlocks ERPNext-specific formula functions (`GL_BALANCE`, `STOCK_QTY`, `ITEM_PRICE`) when ERPNext is installed.
 
 ---
 
-## Features
+## Table of Contents
 
-- **Spreadsheet grid** — powered by Handsontable 6.x, works with any DocType
-- **Formula engine** — HyperFormula with 400+ built-in functions (SUM, IF, VLOOKUP, etc.)
-- **Frappe Formula Library** — 7 ERP-native functions: `FRAPPE_GET`, `FRAPPE_SUM`, `FRAPPE_COUNT`, `FRAPPE_AVG`, `GL_BALANCE`, `STOCK_QTY`, `ITEM_PRICE`
-- **Formula bar** — Excel-style formula editing with cell reference display
-- **Custom cell editors** — Date picker, Link selector, Select listbox, Currency formatter, Checkbox
-- **Formatting toolbar** — Bold, Italic, Underline, Strikethrough, Alignment, Wrap, Font, Size, Text color, Fill color
-- **Autofill** — Drag formulas down/up with automatic relative reference adjustment
-- **Context menu** — Right-click to insert/delete rows, hide/show columns, freeze columns, add formula columns
-- **Find & Replace** — Ctrl+F / Ctrl+H with match-case, whole-cell options; draggable panel
-- **Column Freeze** — Freeze any number of leading columns; state persisted per user
-- **Status bar** — Live selection stats (Count, Sum, Average, Min, Max) in a fixed footer
-- **Saved Workbooks** — Save named views with formula columns, column layout, filters, join config, and sheet tabs
-- **Multi-Sheet Workbooks** — Multiple DocType tabs in one workbook; each tab is an independent query with its own fields, filters, and sort
-- **Export** — Export to `.xlsx` (Excel) or `.csv`
-- **Import** — Import from `.xlsx` or `.csv` with column mapping
-- **Inline save** — Cell edits sync back to Frappe DB in real time
-- **IntelliFlow Join Canvas** — Visual multi-DocType join builder; drag-and-drop nodes, SVG bezier wires, grade badges (S/A/B/C/D/F), cardinality + coverage stats; canvas auto-saved on every structural change
-- **Child Table Support** — Child-table DocTypes (e.g. `Timesheet Detail`, `Sales Invoice Item`) can be added as canvas nodes; teal `CT` badge distinguishes them; system fields (`parent`, `parenttype`, `parentfield`, `idx`) auto-filtered
-- **Aggregate Mode** — CT nodes replace field checkboxes with a `📊 Aggregate` panel: choose field + function (SUM/COUNT/AVG/MIN/MAX) per column; generates a `GROUP BY` subquery so you always get 1 row per parent record (no fan-out)
-- **Per-Node Transform Panel** — Non-CT nodes get a collapsible `🔧 Transform` section: Row Filters (=, !=, >, <, >=, <=, like, in) evaluated server-side, and Computed Columns (Python expressions via `frappe.safe_eval`)
-- **AI Join Suggestions** — networkx graph + TF-IDF + RapidFuzz surface related DocTypes automatically; right-side drawer with per-node ✨ targeting, live search, and teal CT stripe for child-table suggestions
-- **AI Analysis Panel** — post-Apply `🤖 Analyze` button opens right-side drawer: Anomaly Detection (IsolationForest) and Clustering (MiniBatchKMeans with silhouette auto-k); results injected as `_anomaly_score`/`_cluster` columns with row highlighting
-- **Join Path Finder** — BFS shortest path through schema graph; auto-builds multi-hop node chains in one click
-- **4-Layer Validation Engine** — Meta Guard → Pattern Matcher → Type Gate (hard incompatibility → instant red wire) → Value Overlap → Semantic (RapidFuzz); works entirely without LLMs
-- **Association Rule Mining** — mlxtend Apriori on joined data surfaces co-occurrence patterns (IF customer=X THEN territory=Y, lift ≥ 1.2)
-- **Generative BI Chat** — Natural language join discovery: "show me tasks to employee" with enhanced NLP (50+ stopwords, pattern matching, fuzzy DocType matching); clean modern UI with staggered card animations and smooth hover expansion
-- **Excel Ribbon Toolbar** — 4-tab ribbon (Home / Insert / Data / View) with Quick Access green bar; Format Painter, Borders (10 presets), Merge & Center, Number Formats, Conditional Formatting button
-- **Charts** — 5 chart types (Bar/Line/Pie/Donut/Scatter) via frappe-charts; draggable + resizable overlays; per-sheet visibility; saved in workbook config
-- **PivotTable Builder** — 4 drop zones (Rows/Columns/Values/Filters), SUM/COUNT/AVG aggregation, subtotals; "Insert to Sheet" pushes pivot into a new blank sheet tab
-- **Conditional Formatting** — 4 rule types (Cell Value / Color Scale / Top-Bottom N / Duplicate-Unique); persisted per user
-- **1:N Child Table Tree View** — CT columns with multiple rows show `▶ N` expand badge in row header; click to expand individual child rows inline
-- **Focus Cell / Crosshair** — View tab toggle highlights the active row and column; color-customizable; persisted per user
-- **Hide / Unhide Rows** — Right-click to hide rows; Excel-style ▲/▼ click-to-unhide band indicator; hidden state saved in user_settings and workbook
-- **Repeat Last Action (F4)** — Replays the last formatting action (bold, align, fill, border, resize, number format) on the current selection
-- **Formula Precedent Highlighting** — Select a formula cell → all dependency cells get a green outline using HyperFormula's dependency graph
-- **Created / Updated Meta Column** — The 4 Frappe audit fields (owner, creation, modified_by, modified) are automatically grouped into one compact visual column with avatars, CR/MD badges, and dates
-- **Full Format Persistence** — All Home tab formatting, column widths, row heights, and hidden rows survive page refresh (user_settings) and are saved/restored via workbook "Save View"
-- **Report Filter Bar** — Load any Frappe Script/Query Report via Data → Get Data → From Reports; a live filter bar appears above the grid with fieldtype-aware Frappe controls (Link with autocomplete, Date picker, Select dropdown, DateRange as two pickers); Refresh re-runs the report with updated filters; report metadata persisted in workbook
-- **Smart Lookup** — Data tab → Smart Lookup; 3-layer join column detection (Layer 1: Frappe meta Link fields → Layer 2: fuzzy header match via rapidfuzz → Layer 3: Jaccard data overlap); works across any two sheets including report sheets; suggestion cards with confidence bars; Apply delegates to IntelliLookup flow
-- **Activity Column** — The Frappe social fields (`_user_tags`, `_comments`, `_assign`, `_liked_by`, `docstatus`, `idx`) grouped into one compact "Activity" virtual column; SVG icon buttons for tag/like/comment/assign; docstatus badge shown only for submittable doctypes; proper dialogs for all actions (no page redirect); realtime like count update; `_social_html_cache` for O(1) render
-- **Conditional Formatting — Dark Theme** — CF dialog fully dark-theme compatible; all `background:#fff` inline styles removed and replaced with CSS variables; `[data-theme="dark"]` override block
-- **CF Persistence Fix** — Fixed `frappe.model.user_settings` race condition using sync-patch + `update()` pattern
-- **Flash Fill (Ctrl+E)** — Pattern detection on blank columns; automatically fills date sequences, code prefixes, text extraction patterns; Add blank column → type an example → Ctrl+E fills all rows
-- **Column Reorder** — Drag column headers to reorder; new order persisted to user_settings and restored on next load
-- **Frappe-Native Validators** — `beforeChange` hook validates: Currency/Float/Int (numeric only), Link fields (existence check via frappe.db), Select (must be in options), Date (format check); invalid cells show red border
-- **Live Pivot Refresh** — Pivot sheets auto-recompute when `frappe.realtime` fires a `list_update` event for the source DocType — no manual Refresh needed
-- **Field Picker → Center Modal** — "Choose Columns" opens as a sleek centered overlay modal (not a frappe.ui.Dialog); full dark theme; ESC + backdrop close
-- **Focus Cell Dark Theme** — Crosshair highlight correctly blends over dark backgrounds (opaque pre-blended color instead of transparent rgba)
+1. [Feature Overview](#feature-overview)
+2. [Tech Stack](#tech-stack)
+3. [Installation](#installation)
+4. [Release Notes](#release-notes)
+   - [v3.3 — Grid Intelligence + IntelliFlow SQL Engine](#v33--grid-intelligence--intelliflow-sql-engine-mar-2026)
+   - [v3.2 — Smart Lookup + Activity Column](#v32--smart-lookup--activity-column-mar-2026)
+   - [v3.1 — Format Persistence + Focus Cell](#v31--format-persistence--focus-cell-mar-2026)
+   - [v2.6 — Ribbon Toolbar + Charts + Pivot + CF](#v26--ribbon-toolbar--charts--pivot--conditional-formatting)
+   - [v2.5 — Multi-Sheet + IntelliLookup + AI Analysis](#v25--multi-sheet-workbooks--intellilookup--ai-analysis)
+   - [v2.4 — IntelliFlow Join Canvas + AI Discovery](#v24--intelliflow-join-canvas--ai-discovery)
+   - [v2.3 — Frappe Formula Library](#v23--frappe-formula-library)
+   - [v2.2 — Status Bar + Column Freeze + Find & Replace](#v22--status-bar--column-freeze--find--replace)
+   - [v2.1 — Saved Workbooks](#v21--saved-workbooks)
+   - [v1 — Core Spreadsheet Grid](#v1--core-spreadsheet-grid)
+5. [Architecture & File Structure](#architecture--file-structure)
+6. [Competitor Gap](#competitor-gap)
+
+---
+
+## Feature Overview
+
+### Core Grid
+| Feature | Detail |
+|---|---|
+| Spreadsheet grid | Handsontable 6.2.2 — any DocType, any number of columns |
+| Formula engine | HyperFormula 400+ built-in functions (SUM, IF, VLOOKUP, INDEX/MATCH…) |
+| Formula bar | Excel-style cell reference display + formula editing |
+| Custom editors | Date picker, Link selector, Select listbox, Currency formatter, Checkbox |
+| Autofill | Drag formula down/up with relative reference adjustment |
+| Find & Replace | Ctrl+F / Ctrl+H, match-case, whole-cell; draggable panel |
+| Export | `.xlsx` (Excel) or `.csv` |
+| Performance | O(1) `afterRenderer` via 5 HTML caches; 1,000+ row sheets stay smooth |
+| Inline save | `afterChange` → `frappe.client.set_value` → optimistic render |
+| Validators | `beforeChange` — Currency/Float/Int numeric check; Link existence; Select options; Date format |
+
+### ERP-Native Formulas
+```
+=GL_BALANCE("Debtors - TC", "Test Company")               → live GL balance
+=STOCK_QTY("Laptop", "Main Warehouse")                    → live stock quantity
+=ITEM_PRICE("Laptop", "Standard Selling")                 → price list rate
+=FRAPPE_GET("Customer", "CUST-001", "credit_limit_amount")
+=FRAPPE_SUM("Sales Invoice", "grand_total", "customer", "Tata Motors")
+=FRAPPE_COUNT("Sales Order", "name", "status", "Draft")
+=FRAPPE_AVG("Sales Invoice", "outstanding_amount", "customer", "Acme")
+```
+All execute server-side via whitelisted Frappe API — **no data leaves your server**.
+
+### Formatting & Persistence
+- Full Home-tab ribbon: Bold, Italic, Underline, Strikethrough, Alignment, Wrap, Font, Size, Text color, Fill color, Borders (10 presets), Merge & Center, Number Formats
+- Format Painter (one-shot and sticky mode)
+- Repeat Last Action (F4) — replays last bold/align/fill/border/resize on current selection
+- Conditional Formatting — 4 rule types: Cell Value, Color Scale, Top-Bottom N, Duplicate-Unique
+- Column widths, row heights, hidden rows — all saved to `user_settings` and workbook
+- Column Reorder — drag headers; persisted across sessions
+- Focus Cell / Crosshair — View tab toggle; Pickr color picker; dark-theme safe (opaque pre-blend)
+
+### Views & Sheets
+- **Multi-Sheet Workbooks** — multiple DocType tabs, pivot sheets, formula sheets, blank sheets, Query Result sheets; all in one saved workbook
+- **PivotTable Builder** — 4 drop zones (Rows/Columns/Values/Filters), SUM/COUNT/AVG; "Insert to Sheet" creates a new tab; live refresh via `frappe.realtime`
+- **Charts** — 5 types (Bar/Line/Pie/Donut/Scatter) via frappe-charts; draggable + resizable overlays; saved in workbook
+- **Report sheets** — load any Frappe Script/Query Report with a live filter bar; re-runs with Refresh; persisted in workbook
+- **Query Result sheets** — DuckDB-powered analytical SQL results with infinite scroll pagination; compact `query_ast` storage (not raw rows)
+
+### Collaboration
+- **Activity Column** — virtual `_social` column grouping `_user_tags`, `_comments`, `_assign`, `_liked_by`, `docstatus`, `idx` into one compact cell with SVG icon buttons
+- **Live Collaboration Sidebar** — real-time user avatars, row-level comments, ToDo assignment, tags, likes; no page redirect; Frappe WebSocket realtime
+
+### Intelligence
+- **IntelliFlow Join Canvas** — visual multi-DocType join builder; drag nodes, SVG bezier wires, auto-grade badges (S→F), cardinality + coverage stats
+- **Query Flow Panel (QFP)** — full visual SQL builder inside IntelliFlow: SELECT fields, JOINs, WHERE filters, GROUP BY aggregations, window functions (SUM/AVG/ROW_NUMBER/LAG/LEAD/RANK), COMPUTE columns (arithmetic + CASE/WHEN), ORDER BY, LIMIT
+- **DAG Flowchart** — interactive node canvas showing the query pipeline as a directed acyclic graph; dagre auto-layout, SVG bezier edges, fan-out/fan-in for window functions; Figma-style grab-to-pan
+- **DuckDB WASM Engine** — executes SQL entirely in-browser via DuckDB WebAssembly; IndexedDB cache (10-min TTL); pre-warmed on page load for near-instant query execution
+- **Smart Lookup** — 4-layer join column detection: Layer 0c structural FK → Layer 1 meta Link fields → Layer 2 rapidfuzz header match → Layer 3 Jaccard overlap; confidence scores
+- **GenBI AI Join Discovery** — networkx + rapidfuzz + TF-IDF; runs 100% on-premise; zero LLM/API calls
+- **AI Analysis Panel** — Anomaly Detection (IsolationForest) + Clustering (MiniBatchKMeans, silhouette auto-k); results injected as `_anomaly_score` / `_cluster` columns
+- **Association Rule Mining** — mlxtend Apriori on joined data; surfaces co-occurrence patterns
+
+### Bulk Import
+- Flat CSV/XLSX import with column mapping, field type detection, child table support
+- **Tree Import Engine** — hierarchical multi-level bulk import: Pattern 1 (NSM self-referential trees: Employee, Department, Territory) + Pattern 2 (cross-document reference trees: BOM → sub-BOMs); zero DocType hardcoding; 6-layer architecture with dep graph visualization, pre-creation, topological sort, atomic rollback, realtime progress
+
+---
+
+## Tech Stack
+
+### Frontend
+
+| Library | Version | Role |
+|---|---|---|
+| **Handsontable** | 6.2.2 | Spreadsheet grid engine — rendering, selection, cell editors, hooks |
+| **HyperFormula** | latest | Formula engine — 400+ built-in functions + 7 custom ERP formula plugins |
+| **DuckDB WASM** | `@duckdb/duckdb-wasm` | In-browser analytical SQL engine; runs window functions, aggregations, JOINs entirely client-side |
+| **dagre** | ^0.8.5 | Directed Acyclic Graph layout engine — powers the QFP DAG flowchart (LR layout, fan-out/fan-in) |
+| **frappe-charts** | latest | Chart rendering (Bar / Line / Pie / Donut / Scatter) |
+| **Pickr** | latest | Color picker for Focus Cell crosshair customization |
+| **IndexedDB (native)** | — | Client-side DuckDB table cache with 10-min TTL; avoids repeat server fetches |
+| **Vanilla JS (ES6+)** | — | All component logic — no Vue/React/Angular; framework-free for grid performance |
+| **SCSS** | — | All styles; two-block pattern (light + `[data-theme="dark"]` override) |
+
+### Backend (Python)
+
+| Library | Role |
+|---|---|
+| **Frappe Framework** v14/v15 | DocType ORM, whitelisted API, realtime WebSocket, user_settings, background jobs |
+| **ERPNext** *(optional)* | Unlocks `GL_BALANCE`, `STOCK_QTY`, `ITEM_PRICE` formula functions |
+| **networkx** | Directed graph traversal for join path discovery (IntelliFlow + GenBI) and dep topological sort |
+| **rapidfuzz** | Fuzzy string matching for header similarity + value overlap in Smart Lookup |
+| **scikit-learn** | `IsolationForest` (anomaly detection), `MiniBatchKMeans` (clustering), silhouette auto-k |
+| **mlxtend** | Apriori association rule mining on joined datasets |
+| **pdfplumber** | PDF import support |
+| **langdetect** | Language detection (roadmap: PROMPT() formula) |
+| **textblob** | Text processing (roadmap: TRANSLATE(), EXTRACT_AMOUNT()) |
+
+### Infrastructure
+
+| Component | Role |
+|---|---|
+| **MariaDB** | Primary database; all Frappe DocType storage |
+| **Redis** | Cache + realtime pub/sub channel |
+| **Socket.io** | WebSocket server; routes `ev_dep_progress` / `ev_tree_progress` / `ev_tree_progress` events |
+| **frappe-bench** | Build pipeline (`bench build --app excel_view`), migrations, deployment |
+
+### Zero-LLM Policy
+
+All intelligence features run **100% on-premise** — no data ever leaves your server:
+
+| Feature | Algorithm |
+|---|---|
+| Join Discovery (IntelliFlow) | networkx graph traversal + rapidfuzz + TF-IDF cosine similarity |
+| Smart Lookup | Structural FK detection + meta Link fields + rapidfuzz header match + Jaccard overlap |
+| SQL Generation | Deterministic `SQLGenerator` class: `QueryAST → DuckDB SQL`; no LLM |
+| Anomaly Detection | scikit-learn IsolationForest |
+| Clustering | MiniBatchKMeans + silhouette score auto-k |
+| Association Rules | mlxtend Apriori |
+| Flash Fill patterns | Regex-based date/code/text pattern detection |
+| Tree Import | Topological sort (Kahn's algorithm) + DFS cycle detection |
 
 ---
 
@@ -64,43 +152,32 @@ Works on **vanilla Frappe** and optionally unlocks ERPNext-specific formula func
 ### Standard (bare-metal / VM bench)
 
 ```bash
-cd $PATH_TO_YOUR_BENCH
-bench get-app $URL_OF_THIS_REPO
+cd /path/to/your/bench
+bench get-app https://github.com/YOUR_ORG/excel_view
 bench --site your-site.com install-app excel_view
+bench --site your-site.com migrate
+bench build --app excel_view
 ```
 
-Python ML dependencies (networkx, scikit-learn, mlxtend, rapidfuzz, etc.) are listed in `pyproject.toml` and installed automatically by pip when the app is installed. If for any reason they are missing:
+Python ML dependencies (networkx, scikit-learn, mlxtend, rapidfuzz, etc.) are listed in `pyproject.toml` and installed automatically. If missing:
 
 ```bash
 bench pip install -r apps/excel_view/requirements.txt
 ```
 
-### Docker-based ERPNext (frappe_docker)
+### Docker (frappe_docker)
 
-If you are running ERPNext via [frappe_docker](https://github.com/frappe/frappe_docker), follow these steps to add Excel View to your deployment.
-
-#### 1. Add the app to your `apps.json` (custom image build)
-
-Edit (or create) your `apps.json` file that is used by `frappe_docker`'s CI to build a custom image:
-
+#### 1. `apps.json`
 ```json
 [
-  {
-    "url": "https://github.com/frappe/erpnext",
-    "branch": "version-15"
-  },
-  {
-    "url": "https://github.com/YOUR_ORG/excel_view",
-    "branch": "main"
-  }
+  { "url": "https://github.com/frappe/erpnext", "branch": "version-15" },
+  { "url": "https://github.com/YOUR_ORG/excel_view", "branch": "main" }
 ]
 ```
 
-Build the custom image:
-
+#### 2. Build custom image
 ```bash
 export APPS_JSON_BASE64=$(base64 -w 0 apps.json)
-
 docker build \
   --build-arg=FRAPPE_PATH=https://github.com/frappe/frappe \
   --build-arg=FRAPPE_BRANCH=version-15 \
@@ -109,539 +186,383 @@ docker build \
   --file=images/layered/Containerfile .
 ```
 
-#### 2. Update `docker-compose.yml` / `compose.yaml`
-
-Point `image:` in every `backend`, `frontend`, `queue-*`, and `scheduler` service to your custom image tag:
-
-```yaml
-services:
-  backend:
-    image: myorg/erpnext-excel:latest
-  frontend:
-    image: myorg/erpnext-excel:latest
-  queue-long:
-    image: myorg/erpnext-excel:latest
-  queue-short:
-    image: myorg/erpnext-excel:latest
-  scheduler:
-    image: myorg/erpnext-excel:latest
-```
-
-#### 3. Install the app on your site
-
+#### 3. Point services to new image + install app
 ```bash
-# exec into the backend container
 docker compose exec backend bash
-
-# install the app
 bench --site your-site.localhost install-app excel_view
 bench --site your-site.localhost migrate
-```
-
-#### 4. Install Python ML dependencies inside the container
-
-The pip install runs automatically during the image build via `pyproject.toml`. If you are attaching to an **already-running** container and the packages are missing:
-
-```bash
-docker compose exec backend bash
-bench pip install -r apps/excel_view/requirements.txt
-```
-
-#### 5. JS assets — nothing to do
-
-JS bundles are built **automatically** during `docker build` (the layered `Containerfile` runs `bench build` as part of the image build). The runtime worker containers do **not** have Node.js; do not attempt to run `bench build` inside a running container.
-
-After bringing the stack up, just restart `frontend` so nginx picks up fresh static files:
-
-```bash
 docker compose restart frontend
 ```
-
-#### Updating (Docker)
-
-The correct update flow is to **rebuild the image** — not `git pull` inside a running container (worker images have no Node.js so assets can't be rebuilt at runtime).
-
-```bash
-# 1. Update apps.json to the new commit/branch, then rebuild the image
-export APPS_JSON_BASE64=$(base64 -w 0 apps.json)
-docker build \
-  --build-arg=FRAPPE_PATH=https://github.com/frappe/frappe \
-  --build-arg=FRAPPE_BRANCH=version-15 \
-  --build-arg=APPS_JSON_BASE64=$APPS_JSON_BASE64 \
-  --tag=myorg/erpnext-excel:latest \
-  --file=images/layered/Containerfile .
-
-# 2. Roll the stack
-docker compose up -d
-
-# 3. Run migrations if DocTypes changed
-docker compose exec backend bench --site your-site.localhost migrate
-
-# 4. Reload nginx
-docker compose restart frontend
-```
-
-> **Note:** `bench build` is NOT needed at runtime — assets are baked into the image during step 1.
 
 ### Updating (bare-metal)
-
 ```bash
 cd apps/excel_view && git pull
-bench build --app excel_view   # required after every pull (dist files are not committed)
+bench build --app excel_view
+bench --site your-site.com migrate  # only if DocTypes changed
 ```
 
 ---
 
 ## Release Notes
 
-### v3.3 — Mar 2026
+---
 
-**Grid Intelligence — Flash Fill, Column Reorder, Validators, Live Pivot, UI Refinements**
+### v3.3 — Grid Intelligence + IntelliFlow SQL Engine (Mar 2026)
 
-**Flash Fill (Ctrl+E)**
-- Add a blank column → type one or more example values → press Ctrl+E to fill the entire column
+#### Flash Fill (Ctrl+E)
+- Add blank column → type one or more example values → Ctrl+E fills all rows
 - Pattern detection: date sequences, code prefixes (`CUST-001` → `CUST-002`…), text extraction, constant fill
-- Source `"flash_fill"` skips `afterChange` validation/save handlers (cosmetic fill only)
-- Alert on blank column add: "type an example, then Ctrl+E to Flash Fill"
+- `source="flash_fill"` skips `afterChange` validation/save handlers
 
-**Column Reorder (Drag Header)**
-- Drag any column header left or right to reorder columns in-place
-- New order persisted to `user_settings("excel_col_order")` — restored on next page load
-- `_apply_saved_col_order()` runs after every `apply_field_selection()` to maintain order across field changes
-- `_original_columns` snapshot kept for accurate drag-index reads
+#### Column Reorder (Drag Header)
+- Drag column headers to reorder in-place
+- Order persisted to `user_settings("excel_col_order")` — restored on next load
+- `_original_columns` snapshot ensures drag-index reads are accurate
 
-**Frappe-Native Validators**
-- `beforeChange` HOT hook → `_validate_changes()` runs before every cell edit
-- Currency / Float / Int: rejects non-numeric input with red alert
-- Link fields: `frappe.db.exists(doctype, value)` existence check; `_link_validator_cache` Map prevents duplicate API calls
-- Select fields: value must be in the field's `options` list
-- Date fields: validates `YYYY-MM-DD` format
+#### Frappe-Native Validators
+`beforeChange` HOT hook → `_validate_changes()`:
+- **Float/Currency/Int** — rejects non-numeric input with red alert
+- **Link fields** — `frappe.db.exists(doctype, value)` existence check; `_link_validator_cache` prevents duplicate API calls
+- **Select** — value must be in field's `options` list
+- **Date** — validates `YYYY-MM-DD` format
+- Invalid cells show red border; changes blocked
 
-**Live Pivot Refresh**
-- `frappe.realtime.on("list_update", doctype)` subscribed in `sheet_manager.js`
-- Any create/update/delete on the base DocType automatically triggers `_recompute_pivot_sheet()` for all pivot sheets sourced from it
-- No manual Refresh button click needed
+#### Live Pivot Refresh
+- `frappe.realtime.on("list_update", doctype)` in `sheet_manager.js`
+- Any create/update/delete on base DocType auto-triggers `_recompute_pivot_sheet()` for all derived pivot sheets
 
-**UI Refinements**
-- **Smart Lookup sidebar** — full redesign with CSS variables (no hardcoded colors); fields not auto-selected (user picks manually); Select all/None toggle; sample size 200 rows for better FK detection
-- **Smart Lookup Layer 0c** — structural FK detection: `frappe.scrub(target_doctype) == fieldname` → 0.94–0.99 confidence; works even when sample data has zero overlap (filtered report sheets)
-- **Meta column (Created/Updated)** — relative time ("2 days ago"), first name only, pencil SVG for modified row; CSS vars for both themes
-- **Activity column** — SVG icon buttons; docstatus badge only on submittable doctypes; all actions open proper dialogs (no page redirect); fixed: unlike (jQuery `.attr()` not `.data()`), assign (ToDo list API), tags (custom `excel_view.api` endpoints using Tag Link doctype)
-- **Focus cell dark theme** — crosshair pre-blends color over dark base (`bg=28`) producing opaque `rgb()` — eliminates white bleed-through in dark mode
-- **Field Picker → center modal** — "Choose Columns" is now a sleek centered overlay (`.ev-fp-modal`), not a `frappe.ui.Dialog`; ESC + backdrop close; full dark theme
+#### IntelliFlow SQL Engine (Query Flow Panel)
 
----
+The crown jewel of v3.3 — a full visual SQL builder integrated into IntelliFlow that turns drag-and-drop operations into analytical DuckDB SQL executed entirely in the browser.
 
-### v3.2 — Mar 2026
+**Query Flow Panel (QFP) — Visual SQL Builder:**
 
-**Zero-LLM Intelligence — Report Filter Bar + Smart Lookup + Activity Column + Dark Theme Fixes**
+The QFP sidebar appears in IntelliFlow and supports the full query lifecycle:
 
-**Report Filter Bar**
-- Load any Frappe Script Report or Query Report via Data → Get Data → From Reports
-- A collapsible filter bar renders above the HOT grid with proper Frappe controls for each filter:
-  - Link fields → autocomplete with `get_query` / `filters` constraints from the report JS file respected
-  - Date → datepicker, DateRange → two date pickers side by side, Select → native dropdown
-- Refresh button re-runs the report with the current filter values via `frappe.desk.query_report.run`
-- Report name, filter definitions, and current filter values persisted in workbook serialize/restore
-- Filter bar collapses/expands via ▾/▸ toggle; autosaved per sheet
-- z-index fix: parent has no stacking context so `.awesomplete ul` (z-index 1100) floats above HOT grid headers
+| Step | UI | What it builds |
+|---|---|---|
+| Source | Automatically set from canvas | `FROM "tabGL Entry" AS t0` |
+| Fields | Checkbox field picker per node | `SELECT t0.account, t0.debit, …` |
+| JOINs | Canvas wires become JOINs | `LEFT JOIN "tabCustomer" AS t1 ON t0.party = t1.name` |
+| WHERE | Condition rows with field/op/value | `WHERE t0.is_opening = 'No'` |
+| GROUP BY | Aggregate toggle + field/function pairs | `GROUP BY t0.account HAVING SUM(…) > 0` |
+| Window Functions | `+ Add Window` — fn/field/partition/order | `SUM(t0.debit) OVER (PARTITION BY t0.account ORDER BY t0.posting_date)` |
+| Compute | Alias + expression (arithmetic / CASE WHEN) | Outer query `running_debit - running_credit AS balance` |
+| ORDER BY | Field + direction chips | `ORDER BY t0.account ASC, t0.posting_date ASC` |
+| LIMIT | Numeric input | `LIMIT 10000` |
 
-**Smart Lookup (Data tab → Smart Lookup)**
-- 3-layer AI join column detection — zero LLM, entirely server-side:
-  - **Layer 1**: Frappe meta — `frappe.get_meta(doctype).fields` → Link fields pointing to the target DocType (confidence 0.97)
-  - **Layer 2**: Header fuzzy match — `rapidfuzz.fuzz.token_sort_ratio` on label/fieldname pairs (threshold ≥ 75%)
-  - **Layer 3**: Data value overlap — Jaccard similarity on sampled unique values per column pair (threshold ≥ 20%)
-- Works across any two sheets including report sheets (not just DocType sheets)
-- Suggestion cards show: strategy icon (🔗/🔤/📊), confidence %, source→target column, reason, color-coded bar
-- Apply → delegates to IntelliLookup column picker (reuses proven lookup flow)
+**Supported window functions:** `SUM`, `AVG`, `COUNT`, `MIN`, `MAX`, `ROW_NUMBER`, `RANK`, `DENSE_RANK`, `LAG`, `LEAD`, `FIRST_VALUE`, `LAST_VALUE`, `NTILE`
 
-**Activity Column (Social Virtual Column)**
-- When `_user_tags`, `_comments`, `_assign`, `_liked_by`, `docstatus`, `idx` are in the column selection, they are automatically grouped into one compact "Activity" column (mirrors the Meta Column pattern)
-- Each row shows: docstatus badge (Draft/Submitted/Cancelled) · assigned user avatar chips · like button (♥ count, fills red when current user has liked) · comment count · tag chips · idx index
-- CRUD click handlers via jQuery event delegation on `$hot_container` with `data-sc` attributes:
-  - Like → `frappe.desk.like.toggle_like` API + in-place re-render
-  - Assign → `frappe.desk.form.assign_to.get` + Dialog
-  - Tags → `frappe.prompt` + `frappe.desk.tags.add_tag`
-  - Comment → `frappe.set_route` to doc form
-- Workbook save/load: stored as `{ fieldname: "_social", is_social_col: true }` marker; expanded to `["docstatus","idx"]` on load (underscore fields auto-fetched by list view)
-- `_social_html_cache` Map keyed by `name:tags:comments:assign:liked:docstatus:idx` — skips re-render if unchanged; cleared on refresh
+**DAG Flowchart — Interactive Query Visualization:**
 
-**Dark Theme & Layout Fixes**
-- **New-row cells / fetch-auto cells**: `rgba()` on HOT white `<td>` produced cream in dark mode → replaced with opaque `#1a2a1e` / `#1c2820` overrides in `[data-theme="dark"]`
-- **Inline insert bar**: was `position:absolute;top:0` inside `$hot_container` — covered HOT column headers; fixed to `prependTo($grid_main)` with `width:100%;flex-shrink:0` (in-flow flex child)
-- **Sheet tabs**: `.ev-sheet-tabs` / `.ev-sheet-tab` CSS was entirely absent — tabs defaulted to `display:block` and stacked; full CSS block added
-- **CF dialog**: removed all `background:#fff` hardcoded inline styles from both the main dialog and editor sub-dialog HTML; replaced with CSS classes + `[data-theme="dark"]` SCSS block using `var(--fg-color)` / `var(--text-color)` / `var(--border-color)`
+After building a query, the "Flowchart" button reveals an interactive directed acyclic graph showing the query pipeline as colored node cards:
 
-**Conditional Formatting Persistence Fix**
-- Root cause: `frappe.model.user_settings.save()` does NOT update the in-memory cache synchronously — only in the async callback. Concurrent saves (e.g. `sheet_manager` saving `excel_sheets` right after `hot.render()`) read the stale cache (still containing the deleted rule) and POST it after the delete's POST, restoring the old rule
-- Fix: `cf_manager._save_rules()` now (1) patches `frappe.model.user_settings[doctype].excel_cf_rules` synchronously before posting, and (2) calls `frappe.model.user_settings.update()` instead of `save()` to bypass the no-change guard (which would skip the POST if the cache was already patched)
-- CF rules removed from workbook serialization/restoration — they are `user_settings`-only; workbook restore no longer touches `excel_cf_rules`
+```
+[SOURCE]──▶[WHERE]──▶[JOIN t1]──▶[AGG]──▶[WINDOW: running_debit]──▶[COMPUTE]──▶[ORDER/LIMIT]
+                                                                  ╲──▶[WINDOW: running_credit]──╱
+```
 
-**v3.2 Bug Fixes — Mar 19 2026**
+- **dagre LR auto-layout** — nodes positioned automatically; fan-out for parallel window functions
+- **SVG bezier edges** — smooth curved connections with arrowheads
+- **Per-type color coding** — SOURCE (green), JOIN (blue), WHERE (amber), AGGREGATE (purple), WINDOW (teal), COMPUTE (orange), OUTPUT (indigo)
+- **Grab-to-pan** — Figma-style click-drag scrolling; cursor changes to grabbing hand
+- **In-place diff** — same query structure patches node bodies without re-layout; pulse ring animation on updates
 
-- **excel_sheets never persisted (root cause)** — `report_meta._controls` (Frappe UI jQuery objects) caused `JSON.stringify` to throw inside `frappe.request.prepare()`, silently aborting every `update()` call. Fix: `sheet_manager.serialize()` strips `_controls` from `report_meta` — only saves `name`, `filter_defs`, `current_filters`.
-- **_auto_persist_sheets race condition** — sync-patch `frappe.model.user_settings[doctype].excel_sheets` before calling `update()` (same sync-patch pattern as the CF persistence fix).
-- **Smart Lookup on report/blank sheets** — `_slk_join` always iterated `list_view.data`; a lookup on a report sheet (e.g. IGA → Customer) produced empty values. Fix: `src_sheet_id` saved in cfg; `_slk_src_data(cfg)` helper returns `src_sheet.data` for non-base lookups; `_slk_ensure_cols` routes to `src_sheet.columns_config` (not `_master_columns`) for non-base lookups; column re-injection after `_inject_social_column()` skips non-base cfgs; Refresh callback triggers `_reapply_smart_lookups` for affected sheets; `_apply_client_side_lookup` saves with sync-patch.
-- **Pivot table using wrong data** — `board.sheet_manager?.active_sheet` does NOT exist (API is `get_current()`); was always `undefined` → fell through to `list_view.data`. Fixed: `PivotBuilder._get_active_data()` now calls `get_current()`.
-- **Chart using wrong data** — Same `active_sheet` bug in `chart_manager.js`. Both `_build_dialog` and `_get_chart_data()` now use `_get_sheet_data()` which calls `get_current()`.
-- **Pivot sheet `_data_is_stale` never cleared** — `_recompute_pivot_sheet` now sets `sheet._data_is_stale = false` after computing. Stale-check in `_get_active_data` / `_get_sheet_data` bypassed when `active.pivot_config` is set.
-- **`_recompute_pivot_sheet` wrong fallback** — was falling back to `list_view.data` when source sheet was stale → wrong data; now returns early (skips recompute) if `src._data_is_stale` and will recompute correctly on tab switch after the source refreshes.
+**DuckDB WASM Engine:**
+
+SQL executes entirely in-browser via DuckDB WebAssembly — zero server round-trips for query execution:
+
+- **`DuckDBEngineV2`** — singleton (`frappe.views.excel.duckdb_v2`); WASM worker + connection managed once per session
+- **IndexedDB cache** — 10-minute TTL; fetched DocType data survives tab switches without re-fetching from server
+- **`bulk_fetch(doctype)`** — checks IDB → if miss, calls `excel_view.api.bulk_fetch_for_duckdb` (server) → loads into DuckDB via CSV buffer
+- **`run_ast(ast)`** — `QueryAST → SQLGenerator → SQL → DuckDB → {headers, rows}`; auto-ensures all join tables are loaded
+- **Pre-warm on page load** — `_prewarm_and_rerun_ast_sheets()` starts WASM init + IDB pre-load in background as soon as query_ast sheets are detected in user_settings; by the time user clicks the tab, DuckDB is hot
+- **Infinite scroll pagination** — initial fetch: 100 rows; scroll near bottom → `_query_sheet_fetch()` appends next 100 rows via incremented `OFFSET`; stops when page returns < 100 rows
+
+**Compact persistence:**
+
+Query Result sheets save only the `query_ast` JSON (~1–2 KB) in `user_settings`, not the full row data (previously ~100 KB+ as `blank_data`). On page refresh, the query automatically re-runs from the stored AST.
 
 ---
 
-### v3.1 — Mar 2026
+### v3.2 — Smart Lookup + Activity Column (Mar 2026)
+
+**Zero-LLM Intelligence — Report Filter Bar, Smart Lookup, Activity Column, Dark Theme Fixes**
+
+#### Report Filter Bar
+- Data → Get Data → From Reports — loads any Frappe Script/Query Report
+- Live filter bar above grid with fieldtype-aware Frappe controls (Link autocomplete, DateRange, Select)
+- Refresh re-runs report with current filter values
+
+#### Smart Lookup (Data tab)
+4-layer AI join column detection — **zero LLM**, entirely deterministic:
+- **Layer 0c** — structural FK: `frappe.scrub(target_doctype) == source_fieldname` (conf: 0.94–0.99)
+- **Layer 1** — Frappe meta Link fields (conf: 0.97)
+- **Layer 2** — `rapidfuzz.fuzz.token_sort_ratio` on header pairs (threshold ≥ 75%)
+- **Layer 3** — Jaccard data value overlap (threshold ≥ 20%)
+- Works on DocType sheets, report sheets, pivot sheets
+- Suggestion cards: icon, confidence bar, source→target column, reason text
+
+#### Activity Column (Social Virtual Column)
+- Groups `_user_tags`, `_comments`, `_assign`, `_liked_by`, `docstatus`, `idx` into one compact cell
+- SVG icon buttons for like, assign, tag, comment
+- Docstatus badge (Draft/Submitted/Cancelled) — only on submittable DocTypes
+- `_social_html_cache` keyed by all 6 values — O(1) `afterRenderer`
+
+#### Key Bug Fixes
+- **excel_sheets never persisted** — `report_meta._controls` (jQuery DOM objects) caused `JSON.stringify` to throw inside `frappe.request.prepare()`, silently aborting all `update()` calls. Fixed: `serialize()` strips `_controls`
+- **user_settings race condition** — sync-patch `frappe.model.user_settings[doctype][key]` BEFORE calling `update()` — applied everywhere
+- **Pivot/Chart `active_sheet`** — `board.sheet_manager.active_sheet` does NOT exist; API is `get_current()`. Fixed in PivotBuilder and ChartManager
+
+---
+
+### v3.1 — Format Persistence + Focus Cell (Mar 2026)
 
 **Grid Intelligence — Focus Cell, Hide Rows, Repeat Last Action, Precedents, Meta Column, Full Format Persistence**
 
-**Focus Cell / Crosshair (View tab)**
-- Horizontal + vertical highlight lines intersecting at the active cell
-- Toggle in View tab ("Focus Cell" button); color customizable via Pickr color swatch
-- 10% opacity tint on the row/column, 20% at the intersection cell
-- Setting persisted in `user_settings("excel_focus_cell")` — survives page refresh
+#### Focus Cell / Crosshair
+- View tab toggle; color-customizable via Pickr swatch
+- 10% opacity tint on row/column, 20% at intersection cell
+- Dark theme: pre-blended opaque `rgb()` over `bg=28` base — no white bleed-through
+- Persisted in `user_settings("excel_focus_cell")`
 
-**Hide / Unhide Rows**
-- Right-click row header → "Hide Row(s)" — works on single or multi-row selection
-- HOT 6.2.2 has no `hiddenRows` plugin — implemented via `display:none` on TR elements using `afterRenderer`, `afterGetRowHeader`, and `afterRender` sync of left-clone TRs
-- Click-to-unhide indicators: ▲ button above and ▼ button below hidden blocks (green `#217346` band, Excel-style)
-- Hidden rows persisted in `user_settings("excel_hidden_rows")` AND encoded in workbook `format_store.__hidden_rows`
-- Hidden state loaded **before** `_init_hot()` so initial render never shows blank space
+#### Hide / Unhide Rows
+- Right-click row header → "Hide Row(s)"
+- HOT 6.2.2 has **no** `hiddenRows` plugin — implemented via `display:none` on TR using `afterRenderer` + `afterGetRowHeader` + `afterRender` sync of `ht_clone_left` TRs
+- Click-to-unhide ▲▼ bands above/below hidden blocks
+- Hidden state saved in `user_settings` AND `format_store.__hidden_rows` in workbook
 
-**Repeat Last Action (F4)**
-- Records last formatting action automatically: bold, italic, underline, strikethrough, alignment, H-align, V-align, text color, fill color, borders, number format, column resize, row resize
-- F4 replays the action on the current selection
-- Uses HOT `beforeKeyDown` hook with `stopImmediatePropagation` (HOT intercepts F4 for formula cycling — `stopImmediatePropagation` is required, not just `preventDefault`)
+#### Repeat Last Action (F4)
+- Auto-records: bold, italic, align, text/fill color, borders, number format, col/row resize
+- HOT `beforeKeyDown` hook with `stopImmediatePropagation` — required because HOT intercepts F4 for formula cycling
 
-**Formula Precedent Highlighting**
-- Select any formula cell → all cells it depends on get a **green outline** (`2px solid #4caf50`)
-- Uses `HyperFormula.getCellDependencies()` — supports both single-cell and range dependencies
-- Clears automatically when a non-formula cell is selected
-- Toggle in View tab ("Show Precedents")
+#### Formula Precedent Highlighting
+- Select formula cell → HyperFormula `getCellDependencies()` → green outline on all dependency cells
+- Debounced 80ms; View tab toggle
 
-**Created / Updated Meta Column**
-- When `owner`, `creation`, `modified_by`, `modified` fields are in the column selection, they are automatically grouped into one virtual "Created / Updated" column
-- Each row shows: avatar + CR badge + creation date (top row) and avatar + MD badge + last modified date (bottom row); full username in tooltip on hover
-- Column is read-only, 200px wide, excluded from DB saves; the 4 underlying fields remain in `list_view.fields` for the server query
-- Workbook save/load: stored as `{ fieldname: "_meta", is_meta_col: true }` marker; expanded back to the 4 audit fields on load + `_inject_meta_column()` re-runs automatically
+#### Created / Updated Meta Column
+- Virtual `_meta` column groups owner/creation/modified_by/modified into one visual cell
+- Avatar + relative time via `frappe.datetime.comment_when()` + first name only
+- Pencil SVG icon for recently-modified rows; `_meta_html_cache` for O(1) `afterRenderer`
 
-**Full Format Persistence (user_settings + Workbook)**
-- All Home tab formatting — bold, italic, underline, strikethrough, alignment, text color, fill color, borders, number formats — persisted in `user_settings("excel_format_store")`
-- Column widths: fixed for HOT 6.2.2 (uses `plugin.manualColumnWidths[]` array, not the broken `columnWidthsMap`)
-- Row heights: persisted in `user_settings("excel_row_heights")` as `manualRowHeights[]` array
-- Workbook "Save View" captures all of the above + hidden rows + row heights (encoded in `format_store.__hidden_rows` / `format_store.__row_heights` — no schema change needed)
-- Workbook deselect clears all workbook-specific keys from `user_settings` (`excel_hidden_rows`, `excel_row_heights`, `excel_columns`, `excel_format_store`, `excel_cf_rules`, etc.) so the view reverts to clean state
-
-**Bug Fixes**
-- Fixed `"Field not permitted in query: tabEmployee._meta"` — `VIRTUAL_KEYS` set in `apply_field_selection` filters out `_meta` and other virtual column keys before building `list_view.fields`
-- Fixed column width application in `apply_config` — now uses a `key→width` map matched against actual `board.columns` (index-based apply was wrong after meta column injection shifted indices)
-- Fixed workbook column widths in `get_config` — used broken `columnWidthsMap.get()` (undefined in HOT 6.2.2); now reads `plugin.manualColumnWidths[phys_i]` directly
+#### Full Format Persistence
+- All cell formats (bold/color/align/borders/numfmt) saved to `user_settings("excel_format_store")`
+- Column widths: HOT 6.2.2 internal `plugin.manualColumnWidths[]` array (NOT `columnWidthsMap`)
+- Workbook save/load: full `format_store` snapshot including `__hidden_rows` and `__row_heights`
 
 ---
 
-### v2.6 — Mar 2026
+### v2.6 — Ribbon Toolbar + Charts + Pivot + Conditional Formatting
 
-**Excel Ribbon Toolbar + Charts + PivotTable + Conditional Formatting + Tree View**
+**Excel Ribbon Toolbar:**
+- 4-tab ribbon: Home / Insert / Data / View
+- Quick Access green bar (Save, Refresh, column picker, workbook buttons)
+- Format Painter (one-shot and sticky), Borders 10-preset popover, Merge & Center, Number Format selector
 
-**Ribbon Toolbar — 4-tab Excel-style ribbon**
-- **Quick Access Bar** (green header): Save View split-button · Views dropdown · Columns picker · Link Sheets
-- **Home tab**: Format Painter · Font family/size · Bold/Italic/Underline/Strikethrough · Text color · Fill color · Borders dropdown (10 presets: All Borders, Outside, Thick Box, etc.) · Merge & Center dropdown · Alignment (H+V) · Wrap · Indent · Number format (General/Currency/Percentage/Comma/Accounting) · Decimal +/- · Conditional Formatting button
-- **Insert tab**: 5 chart types (Bar/Line/Pie/Donut/Scatter) · PivotTable builder
-- **Data tab**: Sort A→Z / Z→A · Filter · Insert record · Duplicate · Delete selected rows
-- **View tab**: Freeze Panes dropdown (First Row / First Column / At Selection / Unfreeze) · Gridlines toggle
-- Tab strip uses CSS variables for glass-morphism blur — light and dark theme both covered
+**Charts:**
+- 5 types: Bar, Line, Pie, Donut, Scatter via frappe-charts
+- Draggable + resizable floating panel overlaid on grid
+- Per-sheet visibility; saved in workbook config
 
-**Charts (Insert → Charts)**
-- Uses `frappe.Chart` (frappe-charts 2.0.0-rc27) already bundled in Frappe desk — zero new npm deps
-- Dialog: pick X-axis field + multi-select Y-axis fields + title + live preview
-- **Group & Sum by X Axis** toggle — when enabled, duplicate X values are aggregated; auto-detects per Y field: numeric fields → SUM, non-numeric fields (e.g. ID) → COUNT with `(Count)` label suffix; ideal for customer-wise order counts or revenue totals without needing a PivotTable
-- Tree child rows automatically excluded from chart data (parent header row already contains the summary)
-- Output: draggable + resizable overlay on the grid (`position: absolute`)
-- Serialized in workbook config → restored on workbook load
-- Per-sheet visibility: charts are scoped to the sheet tab they were created on
+**PivotTable Builder:**
+- 4 drop zones: Rows, Columns, Values, Filters
+- SUM / COUNT / AVG aggregation; subtotals row
+- "Insert to Sheet" creates a new blank sheet tab populated with pivot data
 
-**PivotTable Builder (Insert → PivotTable)**
-- Pure client-side JS — no library
-- 4 drop zones: Rows · Columns · Values · Filters; SUM/COUNT/AVG per value field
-- Subtotals row and column; grand total row
-- **"Insert to Sheet"** button — pushes pivot result as a new blank sheet tab with custom column headers
+**Conditional Formatting:**
+- 4 rule types: Cell Value (6 operators), Color Scale (2–3 stops), Top/Bottom N, Duplicate/Unique
+- Rules persisted per user via `user_settings` (not workbook — intentionally user-specific)
+- Full dark-theme support via CSS class refactor
 
-**Conditional Formatting (Home → Styles)**
-- Rule types: Cell Value (= / > / < / >= / <= / <> / between / contains) · Color Scale (min/mid/max interpolation) · Top/Bottom N (absolute or %) · Duplicate/Unique
-- Color pickers for fill + text color per rule
-- Rules evaluated in `afterRenderer` — layered on top of format_store
-- Persisted in user_settings (`excel_cf_rules`) and restored on load
-
-**Number Formatting (Home → Number)**
-- Formats: General · Number · Currency · Accounting · Percentage · Fraction · Scientific · Text
-- `ExcelBoard._format_num()` static method; right-aligns numeric output automatically
-- `$` and `%` quick buttons; decimal precision increase/decrease
-
-**Borders (Home → Borders)**
-- Portal-based dropdown (position: fixed — avoids ribbon overflow clipping)
-- 10 presets including Outside Borders (applies only outer edges of the selection range)
-- Stored per cell in `format_store.borders`, applied as inline `border-*` styles
-
-**Merge & Center**
-- HOT `mergeCells` plugin integration; dropdown: Merge & Center · Merge Across · Merge Cells · Unmerge
-
-**Format Painter**
-- Click to capture format from active cell; button stays highlighted (`.ev-active`)
-- Click any target cell to apply captured format; clears paint mode automatically
-
-**1:N Child Table Tree View**
-- When a CT column has multiple child rows per parent: row number header shows `▶ N` badge
-- Collapsed by default (comma-joined summary visible in header row)
-- Click the row number to expand → individual child rows appear below with `└` indicator
-- Expand state preserved across re-renders via `_expanded_keys` Set
-
-**Dark Theme**
-- All new V2.6 popup elements (borders popup, merge popup, chart overlay, portals) have full dark theme overrides
-- Tree row badge adapts (teal on dark, green-tinted on light)
-- Selected cell now shows Excel-blue tint (`--ev-sel-fill`) instead of white
-
-**Bug Fixes (Mar 2026 session)**
-- Workbook deselect: replaced `user_settings.save()` (no-change guard skipped server POST) with direct `update()` call
-- Blank sheet guard in `board.refresh()`: skips HOT `loadData` but still rerenders charts
-- Chart live data on blank sheets: triggers `list_view.refresh()` on sheet switch when charts are present
-- Formulas tab dropdowns clipped by ribbon `overflow: hidden`: fixed with portal pattern (position: fixed, appended to body)
-- `CurrencyEditor.beginEditing` throw on formula insert: wrapped in try/catch + cell editor overridden to `'text'` type before insert + cursor moved to end to prevent select-all-on-focus replacing the formula prefix
-- Cell selection turning white on dark theme: `td.current` fallback changed from `--ev-cell-bg` (#fff) to `--ev-sel-fill` (#deebf7)
-- `hot.loadData` called with 2D matrix instead of array-of-objects: fixed in tree toggle and CT enrichment
-- Inline insert `TypeError: '>' not supported between 'str' and 'float'`: HOT cell values are always strings; now coerced via meta fieldtype (`Float/Currency/Int/Percent` → `parseFloat`, `Check` → `0/1`) before `frappe.client.insert`, for both parent doc and CT child fields
-- CF default range now always spans all rows for the selected columns (was capturing single-row selection, causing unexpected partial highlights)
-- CF tree child rows: range check now uses parent header's HOT index (was bypassing row range entirely, causing unrelated tree children to be highlighted)
+**Tree View (1:N Child Table):**
+- CT columns with N child rows show `▶ N` expand badge in row header
+- Click to expand individual child rows inline below parent
 
 ---
 
-### v2.5+ — Feb 2026
+### v2.5 — Multi-Sheet Workbooks + IntelliLookup + AI Analysis
 
-**Child Table Support + Aggregate Mode in IntelliFlow Canvas**
+**Multi-Sheet Workbooks:**
+- Multiple DocType tabs, pivot tabs, formula tabs, blank tabs — all in one saved workbook
+- Sheet tab bar with `+` add, `×` close, rename, reorder
+- Each tab has independent query, filters, column selection, sort
 
-- **Child table nodes** — DocTypes with `istable=1` (e.g. `Timesheet Detail`, `Sales Invoice Item`, `Purchase Order Item`) can now be added to the canvas. AI Suggestions automatically surfaces them with a teal `CT` badge and stripe.
-- **Aggregate panel** — CT nodes show a `📊 Aggregate` builder instead of field checkboxes. Add any number of `[field] [SUM/COUNT/AVG/MIN/MAX]` rows. The SQL engine generates a `GROUP BY` subquery — no fan-out, always 1 row per parent record.
-  ```sql
-  -- Example: Task → Timesheet Detail (SUM hours)
-  LEFT JOIN (
-      SELECT task, SUM(hours) AS `Timesheet Detail__hours`
-      FROM `tabTimesheet Detail`
-      GROUP BY task
-  ) t1 ON t0.name = t1.task
-  ```
-- **Schema graph updated** — `_get_all_link_edges()` no longer filters out `istable=1` sources; adds `is_child_src` flag; `suggest_joins()` uses `method: "child_table"` for these; sort order: meta → child_table → ML. Cache key bumped to `v2`.
-- **1:N fan-out fix** — `_apply_join_result()` in `excel_board.js` now detects when `joined_rows` has multiple entries per base record (1:N regular join) and expands `list_view.data` by cloning base rows — preserving all data instead of overwriting with the last row.
-- **Canvas auto-save layout** — Canvas state now persists on every structural change (valid edge created, node removed, node dragged), not only after Apply. Removing all non-base nodes explicitly clears `user_settings` so refresh starts clean.
+**IntelliLookup:**
+- Smart cross-DocType column injection based on IntelliFlow join config
+- Per-join field selection dialog; stale flag prevents blank-data joins on non-refreshed sheets
 
----
+**AI Analysis Panel:**
+- Post-Apply `🤖 Analyze` drawer in IntelliFlow canvas
+- **Anomaly Detection** — scikit-learn `IsolationForest` on numeric columns; injects `_anomaly_score` column
+- **Clustering** — `MiniBatchKMeans` with silhouette score auto-k (2–8); injects `_cluster` column
+- Row highlighting by anomaly/cluster; legend in panel
 
-### v2.5 — Feb 2026
+**Canvas Auto-Save:**
+- Every structural change (add node, connect wire, change field) auto-saves canvas state
+- No "Save Canvas" button needed
 
-**Multi-Sheet Workbooks + Transform Panel + AI Analysis**
-
-**Sheet Tabs**
-- Tab strip at bottom of grid (Excel / Google Sheets style)
-- Each tab = independent DocType query with its own field picker, filters, sort, and column widths
-- `+` button → DocType picker dialog; double-click to rename; `×` to remove (Sheet 1 locked)
-- HyperFormula multi-sheet registration (`hf.addSheet` per tab); active sheet tracked via `formula_bridge.set_active_sheet()`
-- HOT swap on tab switch: `hot.updateSettings({ columns })` + `hot.loadData(data)` — instant, no re-fetch if data cached
-- Lazy fetch — only the active tab loads data on open
-- Workbook save/load includes full `sheets[]` state (`Excel Workbook.sheets` Code/JSON field)
-
-**IntelliLookup Banner**
-- After adding a second sheet tab, a non-intrusive banner auto-detects if the new DocType links to the current one (meta L1A/L1B + value sampling L2)
-- "Add lookup column →" injects a client-side join column without any formula
-
-**Per-Node Transform Panel (`🔧 Transform`)**
-- Collapsible panel on every non-CT, non-base canvas node
-- **Row Filters**: `[field] [=|!=|>|<|>=|<=|like|in] [value]` evaluated server-side in `_apply_node_transforms()`; `like` and `in` operators handled specially; numeric and string comparisons auto-detected
-- **Computed Columns**: `label` + Python expression evaluated via `frappe.safe_eval` with `row` context; safe builtins only; errors → `#ERR!`
-- State serialized into `join_config.nodes[].row_filter` and `computed_cols`; restored from workbook/user_settings
-
-**AI Analysis Panel (`🤖 Analyze`)**
-- Button appears in canvas header after Apply
-- Right-side drawer with two tabs:
-  - **Anomaly Detection** — scikit-learn `IsolationForest`; contamination slider (5–30%); injects `_anomaly_score` + `_is_anomaly` per row; anomalous rows highlighted red in grid
-  - **Clustering** — `MiniBatchKMeans`; K=Auto (silhouette) or manual 2–6; injects `_cluster` column; rows colored by cluster (6 pastel colors); centroid summary dialog
-- Results injected into `board.list_view.data` in-place; `board.hot.render()` picks up row coloring via extended `cells` callback
-
-**New API endpoints**: `detect_lookup`, `detect_anomalies`, `cluster_data`, `_apply_node_transforms`
+**Aggregate Mode (Child Table nodes):**
+- CT nodes get `📊 Aggregate` panel instead of field checkboxes
+- Choose field + function (SUM/COUNT/AVG/MIN/MAX)
+- Generates `GROUP BY` subquery: always 1 row per parent (no fan-out)
 
 ---
 
-### v2.4.5 — Feb 2026
+### v2.4 — IntelliFlow Join Canvas + AI Discovery
 
-**IntelliFlow AI — 4-Layer Validation + AI Discovery**
+**IntelliFlow Visual Join Canvas:**
+- Drag-and-drop node builder for multi-DocType joins
+- SVG bezier wires between nodes; color-coded by grade (S=green → F=red)
+- Cardinality detection (1:1, 1:N, N:1, N:N) + coverage % per join
+- "Discover Joins" — AI scans schema + sample data; shows suggestions in right drawer with confidence scores
+- BFS Join Path Finder — auto-builds multi-hop chains ("Customer → Sales Order → Sales Invoice") in one click
+- Per-node Transform panel: Row Filters + Computed Columns (Python `safe_eval`)
+- Canvas state persisted to `Excel Workbook` DocType
 
-- **4-Layer validation pipeline:** L0 Meta Guard → L1 Pattern Matcher → L2 Type Gate → L3 Value Overlap → L4 Semantic
-  - L1 detects `naming_series` / `hash` / `email` / `date` / `numeric` / `text` patterns per field
-  - L2 is a hard gate — type-incompatible pairs (date ↔ numeric, email ↔ hash, etc.) reject immediately; wire turns **red** with no delay
-  - L3 value overlap combined with L1 pattern score (composite = max of both)
-  - L4 RapidFuzz `token_sort_ratio` + `partial_ratio` + dynamic `std_fields` boost
-  - Final confidence = 0.7 × composite + 0.3 × semantic
-  - Grades: **S** (meta link) / **A** (≥0.80) / **B** (≥0.60) / **C** (≥0.40) / **D** (≥0.25) / **F** (rejected)
-- **`✨ AI` Suggestions drawer** — right-side panel (slides in), cards with left color stripe (green = direct Link, blue = ML), score bar, + Add button, live search filter
-  - Per-node targeting: click ✨ on any canvas node to get suggestions for that DocType
-  - ↻ Refresh button to bust the 5-min Redis cache on demand
-  - Returns ALL candidates (no top-5 cap) — direct Link DocTypes first, then ML-ranked
-- **`🔗 Path` finder** — `frappe.prompt` → BFS via networkx on cached schema graph → auto-builds multi-hop node chain
-- **`📊 Patterns`** — mlxtend Apriori on applied join data; IF/THEN table with support, confidence, lift (lift ≥ 2 highlighted green)
-- **Port glow during wire drag** — `rank_field_matches` (TF-IDF + rapidfuzz) scores target ports; high-score ports pulse green, mid-score amber
-- **Badge enrichment** — grade chip + `1:N | 87% cov` appended to each edge label
-- **Performance** — single SQL JOIN on `tabDocField` + `UNION` Custom Fields + 5-min Redis cache replaces N×`get_meta()` calls
+**4-Layer AI Validation Engine (zero LLM):**
+1. **Meta Guard** — structural FK detection via `frappe.scrub()`
+2. **Pattern Matcher** — header name similarity via rapidfuzz
+3. **Type Gate** — hard incompatibility check (hard red wire)
+4. **Value Overlap + Semantic** — Jaccard + RapidFuzz fuzzy value matching
 
----
-
-### v2.4 — Feb 2026
-
-**IntelliFlow — Visual Join Canvas**
-
-- Full-screen overlay canvas with draggable DocType nodes and SVG bezier wire edges
-- `+ Add DocType` button → searchable node added to canvas
-- Draw wires from right-side output ports to left-side input ports to create joins
-- 2-layer validation: meta Link field check → data value overlap sampling (≥30% = valid)
-- Valid edge: green solid wire + confidence badge; Invalid: red dashed + auto-remove after 3s
-- Field checkboxes on target nodes to select which columns to include in output
-- **Preview** (5 rows) + **Apply** → `get_joined_data` → dynamic LEFT JOIN SQL → virtual join columns in grid (read-only, excluded from DB saves)
-- **Canvas persistence** — state (nodes, positions, edges, field selections) saved in `user_settings` and inside Workbook DocType; auto-restored and re-validated on next open
+**Association Rule Mining:**
+- mlxtend Apriori on joined data
+- Surfaces co-occurrence patterns with lift ≥ 1.2
+- "IF customer=Tata THEN territory=West, lift=2.3"
 
 ---
 
-### v2.3 — Feb 2026
+### v2.3 — Frappe Formula Library
 
-**Frappe Formula Library — 7 ERP-native HyperFormula functions**
-- `=FRAPPE_GET(doctype, name, fieldname)` — fetch any field from any document
-- `=FRAPPE_SUM(doctype, fieldname [, filter_field, filter_val …])` — live aggregate with SUMIF-style filters
-- `=FRAPPE_COUNT(doctype [, filter_field, filter_val …])` — live count
-- `=FRAPPE_AVG(doctype, fieldname [, filter_field, filter_val …])` — live average
-- `=GL_BALANCE(account, company [, from_date, to_date, cost_center, finance_book])` — net GL balance (ERPNext only)
-- `=STOCK_QTY(item_code, warehouse [, as_of_date])` — current or point-in-time stock qty (ERPNext only)
-- `=ITEM_PRICE(item_code, price_list [, qty, customer, uom])` — live price list lookup (ERPNext only)
-- Async two-pass cache: cells show `#LOADING…` shimmer while fetching, then auto-update
-- GPU-composited shimmer animation (`transform` on `::after`, `will-change: transform`)
-- Permission enforcement: `#PERM_DENIED` on access denied; `#ERR!` on server error
-- Dynamic field validation — respects custom fields from any installed app
-- ERPNext functions conditionally registered — gracefully absent on vanilla Frappe
+7 ERP-native HyperFormula functions registered as custom plugins:
 
----
-
-### v2.2 — Feb 2026
-
-**Column Freeze**
-- Right-click any column header → "Freeze up to this column" / "Unfreeze All Columns"
-- Visual indicator: soft shadow border on freeze boundary
-- Freeze position saved in `user_settings` — restored automatically on next load
-
-**Find & Replace**
-- Ctrl+F → Find panel; Ctrl+H → Find & Replace panel
-- Options: Match case, Whole cell only
-- Navigation: Enter / Shift+Enter cycles through all matches (count badge shown)
-- Replace One / Replace All — readonly cells skipped automatically
-- Draggable floating panel
-
-**Status Bar**
-- Fixed footer showing live selection stats: address, Count, Sum, Average, Min, Max
-- Performance guard: skips numeric scan for selections > 5,000 cells
-- Correctly handles formula cells (uses HyperFormula evaluated result)
-- Strict numeric detection — date strings like `"2026-02-22"` are not counted as numbers
-
----
-
-### v2.1 — Feb 2026
-
-**Saved Workbooks**
-- Save named workbooks per DocType: column selection, order, widths, formula columns, filters, sort
-- Load/switch workbooks from toolbar "Views" dropdown
-- "Save View" split-button: overwrite current or save as new ("Save As…")
-- My Views / Shared Views sections; delete with confirmation
-- Workbook state auto-restored on page refresh (server-side via `Excel Workbook` DocType)
-
-**Formula Columns**
-- Add virtual columns not tied to any Frappe field
-- Supports formulas (`=SUM`, `=IF`, Frappe functions, etc.) and plain values
-- Saved and restored as part of workbook (per-doc values keyed by `doc.name`)
-- Autofill works with relative reference adjustment
-
----
-
-### v2.0 — Feb 2026
-
-**Performance**
-- Lazy loading — 4KB router bundle loads everywhere; 1.6MB deps bundle loads only when Excel View is opened
-- Zero cost for users who never open Excel View
-
-**Field Picker — "Choose Columns" dialog**
-- Select which DocType fields to display; drag-to-reorder; saved server-side per user
-- RBAC-aware — respects `permlevel` field permissions
-- Live search by label or fieldname; Select All / Deselect All
-
-**Toolbar & Grid**
-- Full formatting toolbar wired for single cell and multi-cell range selection
-- Rich color palette: 3-section Excel 2007 style (theme + standard + recent + custom hex)
-- `outsideClickDeselects: false` — toolbar clicks don't deselect the grid
-- Column widths persist per user per DocType
-
----
-
-### v1.0 — Initial Release
-
-- Full spreadsheet grid for any DocType
-- HyperFormula integration (400+ formulas), formula bar, autofill
-- Custom cell editors: Date, Link, Select, Currency, Check
-- Formatting toolbar: font, size, bold/italic/underline/strike, alignment, wrap, text/fill color
-- Context menu (insert/delete rows)
-- Export to `.xlsx` / `.csv`, Import from `.xlsx` / `.csv`
-- Inline real-time save to Frappe DB
-- View switcher integration (alongside List, Kanban, Report views)
-
----
-
-## Upcoming
-
-### v3.3 — Zero-LLM Intelligence II + Data Integrity
-
-- **Flash Fill (Ctrl+E)** — auto-detect and fill patterns from 2+ examples (prefix/suffix stripping, delimiter split, case transform, regex extraction); server-side strategy engine in `api.py`
-- **Formula Autodetect / Ghost Text** — type `=` in a cell → header-aware ghost text suggests `=SUM(...)`, `=TEXT(...,"mmmm")`, etc.; Tab to accept
-- **`=DETECT_LANGUAGE(cell)`** — langdetect-powered language detection formula (returns "en", "es", "fr", etc.)
-- **`=TRANSLATE(cell, lang)`** — dict-based business term translation (Invoice→Factura, etc.; no LLM)
-- **Frappe-Native Validators** — `beforeChange` hook validates Currency/Float/Int (non-numeric → reverts), strips whitespace, checks Link field existence (red triangle indicator on invalid)
-- **Live Pivot Refresh** — Frappe SocketIO `list_update` event triggers debounced pivot recompute; pivot sheet updates in-place without losing filter state
-- **Smart Lookup N-hop** — NetworkX schema graph enhancement: Layer 1 extended to traverse multi-hop paths (Sales Invoice → Customer → Territory) using `nx.shortest_path`
-
-### v3.4 — Agent Mode
-
-- **Agent Mode Sidebar** — right-side panel; deterministic intent parsing (regex, no LLM); built-in agents: amortization schedule, invoice summary, date sequence, Fibonacci, times table; all compute client-side
-
-### v3.5 — Clean Data Panel + PROMPT() Formula
-
-- **Clean Data Panel** — rapidfuzz clusters similar text values (typo detection), flags mixed-type columns; Apply to fix in bulk
-- **`=PROMPT("task", cell)`** — deterministic text extraction: first name, last name, city, country, sentiment (TextBlob), case transforms; zero LLM
-
----
-
-## Tech Stack
-
-| Layer | Library |
+| Function | Description |
 |---|---|
-| Grid | [Handsontable](https://handsontable.com/) 6.2.2 (Community, GPL-3.0) |
-| Formula engine | [HyperFormula](https://hyperformula.handsontable.com/) 2.x (GPL-3.0) |
-| Excel export/import | [ExcelJS](https://github.com/exceljs/exceljs) (lazy-loaded) |
-| CSV parsing | [PapaParse](https://www.papaparse.com/) |
-| ML | networkx, scikit-learn, rapidfuzz, mlxtend, scipy, pandas (all open-source, no LLMs) |
-| PDF parsing | pdfplumber (planned: Import from PDF) |
+| `GL_BALANCE(account, company, [from_date], [to_date])` | Live GL account balance |
+| `STOCK_QTY(item_code, warehouse)` | Current stock quantity |
+| `ITEM_PRICE(item_code, price_list, [uom])` | Price list rate |
+| `FRAPPE_GET(doctype, name, fieldname)` | Single field value from any doc |
+| `FRAPPE_SUM(doctype, value_field, filter_field, filter_value)` | Aggregated sum |
+| `FRAPPE_COUNT(doctype, value_field, filter_field, filter_value)` | Count matching docs |
+| `FRAPPE_AVG(doctype, value_field, filter_field, filter_value)` | Average of matching docs |
+
+All functions execute via `frappe.call` → whitelisted Python endpoints → return cached results.
 
 ---
 
-## Contributing
+### v2.2 — Status Bar + Column Freeze + Find & Replace
 
-```bash
-cd apps/excel_view
-pre-commit install
-bench build --app excel_view --watch
+- **Status bar** — fixed footer showing Count, Sum, Average, Min, Max for current selection
+- **Column Freeze** — freeze leading N columns; state persisted per user
+- **Find & Replace** — Ctrl+F / Ctrl+H; match-case, whole-cell, direction; draggable panel; Replace All
+
+---
+
+### v2.1 — Saved Workbooks
+
+- `Excel Workbook` DocType — saves named views with full config: formula columns, column layout, filters, sort, join config, format_store, sheet tabs
+- WorkbookManager JS class — save, load, delete, rename workbooks
+- Workbook list in Quick Access bar; last-used workbook auto-loaded on return
+- Sync-patch pattern prevents race conditions on concurrent workbook saves
+
+---
+
+### v1 — Core Spreadsheet Grid
+
+- Handsontable 6.2.2 grid on any Frappe DocType list view
+- HyperFormula formula engine with 400+ functions
+- Excel-style formula bar with cell reference display
+- Custom cell editors: Date picker, Link selector (frappe autocomplete), Select listbox, Currency formatter, Checkbox toggle
+- Context menu: insert/delete rows, hide/show columns, freeze, add formula column
+- Lazy loading — `app_include_js` loads only the router bundle; main deps bundle loaded dynamically
+- Field picker — column selection with search; persisted per user per DocType
+- Inline save — `afterChange` hook → `frappe.client.set_value` → optimistic render
+- Export to `.xlsx` / `.csv`
+- Import from `.xlsx` / `.csv` with column mapping dialog
+- Dark theme compatibility throughout
+
+---
+
+## Architecture & File Structure
+
+### File Structure
+```
+apps/excel_view/
+├── excel_view/
+│   ├── api.py                   # Whitelisted endpoints: bulk import, tags, workbook API, bulk_fetch_for_duckdb
+│   ├── tree_import.py           # Tree Import Engine: analyze_import_deps, pre_create_deps, import_tree
+│   ├── excel_view/
+│   │   └── doctype/
+│   │       └── excel_workbook/  # Workbook DocType (stores saved view configs as JSON)
+│   └── public/
+│       ├── js/
+│       │   ├── excel/
+│       │   │   ├── components/
+│       │   │   │   ├── excel_board.js          # Main grid orchestrator; inline save, scroll, validators
+│       │   │   │   ├── toolbar.js              # Ribbon toolbar, all import logic, TreeImportEngine
+│       │   │   │   ├── sheet_manager.js        # Multi-sheet tab management; query_ast re-run; pre-warm
+│       │   │   │   ├── workbook_manager.js     # Save/load workbooks
+│       │   │   │   ├── pivot_builder.js        # PivotTable builder
+│       │   │   │   ├── chart_manager.js        # Chart overlay manager
+│       │   │   │   ├── cf_manager.js           # Conditional formatting
+│       │   │   │   ├── join_canvas.js          # IntelliFlow canvas + QFP sidebar + DAG flowchart
+│       │   │   │   └── ...
+│       │   │   └── utils/
+│       │   │       ├── frappe_formula_plugin.js  # HyperFormula ERP formula functions
+│       │   │       ├── query_ast.js              # QueryAST class — canonical in-memory query representation
+│       │   │       ├── sql_generator.js          # QueryAST → DuckDB SQL compiler
+│       │   │       ├── duckdb_engine_v2.js       # DuckDB WASM engine + IDB cache + singleton
+│       │   │       └── duckdb_engine.js          # V1 pivot-only DuckDB engine (legacy)
+│       │   └── canvas/
+│       │       ├── collaboration_sidebar_vanilla.js
+│       │       └── collaboration_dialog_vanilla.js
+│       └── scss/
+│           └── excel_view.bundle.scss       # All styles: light + dark theme two-block pattern
+└── genbi/
+    ├── schema_graph.py          # networkx DocType relationship graph
+    ├── join_suggester.py        # TF-IDF + rapidfuzz join discovery
+    └── grid_intent.py           # Deterministic NL intent parser
 ```
 
-PRs welcome. No LLM-based features — all AI/ML uses only open-source classical libraries (scikit-learn, rapidfuzz, networkx).
+### Key Design Decisions
+
+- **Vanilla JS throughout** — no Vue/React; performance-critical grid code stays framework-free
+- **HOT 6.2.2 internal APIs** — `plugin.manualColumnWidths[]` array (not Map); no `hiddenRows` plugin available
+- **user_settings race condition** — always sync-patch `frappe.model.user_settings[doctype][key]` before `update()`, never use `save()`
+- **SheetManager API** — `get_current()` returns active sheet; `active_sheet` property does NOT exist
+- **report_meta._controls** — NEVER serialize; strip in `serialize()` to prevent JSON.stringify circular-ref crash
+- **Realtime room** — `user=frappe.session.user` (routes to `user:{user}` room) for tree/dep progress
+- **CSS** — two-block pattern: base light + `[data-theme="dark"]` override; never `rgba()` on HOT white cells in dark mode
+- **Zero LLM policy** — all AI features: networkx + rapidfuzz + scikit-learn + mlxtend + DuckDB only; no API calls to any LLM service
+- **query_ast persistence** — Query Result sheets store only the compact AST JSON in user_settings, never raw row data; re-executed on page restore
+- **DuckDB pre-warm** — `_prewarm_and_rerun_ast_sheets()` fires on restore: WASM init → parallel IDB table pre-load → SQL execution; perceived latency near-zero for cached datasets
+
+---
+
+## Competitor Gap
+
+| Feature | Excel | Google Sheets | Zoho Zia | Odoo Spreadsheet | **Excel View** |
+|---|:---:|:---:|:---:|:---:|:---:|
+| ERP-native formulas (GL_BALANCE etc.) | ✗ | ✗ | ✗ | ✗ | **✓ 7 functions** |
+| Live ERP data (any DocType) | ✗ | ✗ | Zoho only | Odoo only | **✓** |
+| Write-back to ERP from grid | ✗ | ✗ | ✗ | ✗ | **✓** |
+| In-browser analytical SQL (DuckDB WASM) | ✗ | ✗ | ✗ | ✗ | **✓** |
+| Visual SQL builder with DAG flowchart | ✗ | ✗ | ✗ | ✗ | **✓ QFP** |
+| Window functions (running totals, rank) | ✓ | ✓ | ✗ | ✗ | **✓ in-browser** |
+| Multi-level / tree bulk import | ✗ | ✗ | ✗ | ✗ | **✓** |
+| Visual join canvas with AI discovery | ✗ | ✗ | ✗ | ✗ | **✓ IntelliFlow** |
+| Cross-doctype joins (any DocTypes) | ✗ | BigQuery only | ✗ | ✗ | **✓** |
+| Live collaboration (avatars/comments/assign) | ✗ | ✓ | Partial | ✗ | **✓** |
+| Deterministic AI (no LLM, air-gapped) | ✗ | ✗ | ✗ | ✓ | **✓** |
+| Proactive anomaly / clustering insights | Copilot/paid | Gemini/paid | Basic | ✗ | **✓ on-premise** |
+| Format persistence (workbook + user) | ✓ | ✓ | Partial | ✗ | **✓ full** |
 
 ---
 
 ## License
 
-MIT
+MIT License — see `license.txt`
 
+---
+
+*Built with ❤️ on Frappe Framework · Handsontable 6.2.2 · HyperFormula · DuckDB WASM · dagre · frappe-charts · Pickr · networkx · rapidfuzz · scikit-learn · mlxtend · pdfplumber · MariaDB · Redis · Socket.io*

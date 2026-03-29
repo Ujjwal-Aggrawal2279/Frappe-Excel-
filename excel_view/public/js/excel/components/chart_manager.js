@@ -299,19 +299,39 @@ frappe.views.excel.ChartManager = class ChartManager {
 		const base_rows = data.filter(r => !r._tree_is_child);
 		const rows      = limit > 0 ? base_rows.slice(0, limit) : base_rows;
 
+		// Helper: resolve a cell value — if it's a formula string, get the HF-computed display value
+		const bridge = this.board.formula_bridge;
+		const _resolve = (row_idx, key, raw) => {
+			if (bridge && typeof raw === "string" && raw.startsWith("=")) {
+				const col_idx = this.board._get_col_idx(key);
+				if (col_idx >= 0) {
+					const computed = bridge.get_display_value(row_idx, col_idx);
+					if (computed !== null && computed !== undefined && !String(computed).startsWith("#LOADING")) {
+						return String(computed);
+					}
+				}
+			}
+			return raw;
+		};
+
 		let labels, datasets;
 		if (aggregate) {
 			// Group by X value — numeric fields → SUM, non-numeric (e.g. ID) → COUNT
 			const order = [];
 			const groups = {};
-			rows.forEach(row => {
-				const lbl = String(row[x_key] ?? "");
+			rows.forEach((row, i) => {
+				const raw = row[x_key] ?? "";
+				const lbl = String(_resolve(i, x_key, raw));
+				if (!lbl || lbl.startsWith("#LOADING") || lbl.startsWith("=")) return; // skip unresolved formula cells
 				if (!groups[lbl]) { groups[lbl] = {}; order.push(lbl); }
 				y_keys.forEach(k => {
-					const v = parseFloat(row[k]);
+					const v = parseFloat(_resolve(i, k, row[k]));
 					groups[lbl][k] = (groups[lbl][k] || 0) + (isNaN(v) ? 1 : v);
 				});
 			});
+			// Sort date labels chronologically if they look like dates (YYYY-MM-DD)
+			const is_date_label = order.length > 0 && /^\d{4}-\d{2}-\d{2}$/.test(order[0]);
+			if (is_date_label) order.sort();
 			labels   = order;
 			datasets = y_keys.map(key => {
 				const col_title = this.board.columns.find(c => c.data === key)?.title || key;
@@ -324,10 +344,10 @@ frappe.views.excel.ChartManager = class ChartManager {
 				};
 			});
 		} else {
-			labels   = rows.map(row => String(row[x_key] ?? ""));
+			labels   = rows.map((row, i) => String(_resolve(i, x_key, row[x_key] ?? "")));
 			datasets = y_keys.map(key => ({
 				name:   this.board.columns.find(c => c.data === key)?.title || key,
-				values: rows.map(row => parseFloat(row[key]) || 0),
+				values: rows.map((row, i) => parseFloat(_resolve(i, key, row[key])) || 0),
 			}));
 		}
 		return { title, type: this._chart_type, x_key, y_keys, row_limit: limit, aggregate, labels, datasets };
@@ -346,17 +366,17 @@ frappe.views.excel.ChartManager = class ChartManager {
 		$empty.hide();
 		$mount.show().empty();
 
-		try {
-			new frappe.Chart($mount[0], {
-				type,
-				title,
-				data:   { labels, datasets },
-				height: $mount[0].clientHeight - 10 || 320,
-				colors: ["#2196F3", "#4CAF50", "#FF9800", "#E91E63", "#9C27B0", "#00BCD4"],
-			});
-		} catch (e) {
-			$mount.html(`<div class="ev-cd-preview-error">${__("Preview error")}: ${frappe.utils.escape_html(e.message)}</div>`);
-		}
+		requestAnimationFrame(() => {
+			try {
+				frappe.views.excel.PlotEngine.render($mount[0], {
+					type, title, labels, datasets,
+					width:  $mount[0].clientWidth  || 560,
+					height: $mount[0].clientHeight - 10 || 300,
+				});
+			} catch (e) {
+				$mount.html(`<div class="ev-cd-preview-error">${__("Preview error")}: ${frappe.utils.escape_html(e.message)}</div>`);
+			}
+		});
 	}
 
 	_add_to_sheet() {
@@ -420,24 +440,14 @@ frappe.views.excel.ChartManager = class ChartManager {
 			</div>
 		`).appendTo(this.board.$hot_container);
 
-		let chart_instance = null;
-		try {
-			chart_instance = new frappe.Chart($el.find(".ev-chart-mount")[0], {
-				type:   cfg.type,
-				title:  cfg.title,
-				data:   { labels: cfg.labels, datasets: cfg.datasets },
-				height: cfg.height - 40,
-				colors: ["#2196F3", "#4CAF50", "#FF9800", "#E91E63", "#9C27B0"],
-			});
-		} catch (e) {
-			$el.find(".ev-chart-mount").html(`<div style="padding:8px;font-size:11px;color:red">${frappe.utils.escape_html(e.message)}</div>`);
-		}
-
-		const overlay = { id: cfg.id, $el, chart_instance, cfg: { ...cfg } };
+		const overlay = { id: cfg.id, $el, chart_instance: null, cfg: { ...cfg } };
 		this._overlays.push(overlay);
 
 		if (!this.board.chart_overlays) this.board.chart_overlays = [];
 		this.board.chart_overlays.push(cfg);
+
+		// Kick off the first render (single rAF inside _rerender_overlay).
+		this._rerender_overlay(overlay);
 
 		// Header buttons
 		$el.find(".ev-chart-overlay-close").on("click", () => {
@@ -452,22 +462,43 @@ frappe.views.excel.ChartManager = class ChartManager {
 		this._bind_resize($el, overlay);
 	}
 
-	/** Re-render the frappe.Chart inside an existing overlay (after edit). */
+	/** Re-render the frappe.Chart inside an existing overlay (after create / edit / resize). */
 	_rerender_overlay(overlay) {
+		// Cancel any already-pending render for this overlay so rapid calls don't stack.
+		if (overlay._raf) {
+			cancelAnimationFrame(overlay._raf);
+			overlay._raf = null;
+		}
+
 		const $mount = overlay.$el.find(".ev-chart-mount");
 		$mount.empty();
 		overlay.$el.find(".ev-chart-overlay-title").text(overlay.cfg.title || "");
-		try {
-			overlay.chart_instance = new frappe.Chart($mount[0], {
-				type:   overlay.cfg.type,
-				title:  overlay.cfg.title,
-				data:   { labels: overlay.cfg.labels, datasets: overlay.cfg.datasets },
-				height: overlay.cfg.height - 40,
-				colors: ["#2196F3", "#4CAF50", "#FF9800", "#E91E63", "#9C27B0"],
-			});
-		} catch (e) {
-			$mount.html(`<div style="padding:8px;font-size:11px;color:red">${frappe.utils.escape_html(e.message)}</div>`);
-		}
+
+		const chart_h = (overlay.cfg.height || 300) - 40;
+		const chart_w = overlay.cfg.width  || 500;
+		// Pin explicit pixel dimensions so frappe.Chart always reads non-zero clientWidth.
+		$mount.css({ width: chart_w + "px", height: chart_h + "px" });
+
+		// Single rAF: let the browser apply the new CSS before the chart reads dimensions.
+		overlay._raf = requestAnimationFrame(() => {
+			overlay._raf = null;
+			if (!overlay.$el.closest("body").length) return; // overlay was removed
+			try {
+				// Destroy previous instance (uPlot needs explicit cleanup)
+				if (overlay.chart_instance?.destroy) overlay.chart_instance.destroy();
+
+				overlay.chart_instance = frappe.views.excel.PlotEngine.render($mount[0], {
+					type:     overlay.cfg.type,
+					title:    overlay.cfg.title,
+					labels:   overlay.cfg.labels,
+					datasets: overlay.cfg.datasets,
+					width:    chart_w,
+					height:   overlay.cfg.height,
+				});
+			} catch (e) {
+				$mount.html(`<div style="padding:8px;font-size:11px;color:red">${frappe.utils.escape_html(e.message)}</div>`);
+			}
+		});
 	}
 
 	_remove_overlay(overlay) {

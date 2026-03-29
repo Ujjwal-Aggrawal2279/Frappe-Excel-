@@ -119,29 +119,29 @@ frappe.views.excel.DataManager = class DataManager {
 		this._save_queue = {};
 
 		const doctype = this.board.doctype;
-		const results = await Promise.allSettled(
-			Object.entries(queue).map(([name, fields]) =>
-				frappe.db.set_value(doctype, name, fields)
-			)
-		);
+		// Single HTTP round-trip: server iterates sequentially in one transaction.
+		// Prevents MySQL deadlocks that occur when parallel set_value calls lock
+		// the same child tables or related rows concurrently.
+		const updates = Object.entries(queue).map(([name, fields]) => ({ name, fields }));
 
-		const errors = results.filter((r) => r.status === "rejected");
-		if (errors.length) {
-			frappe.show_alert(
-				{
-					message: __(
-						"{0} record(s) failed to save",
-						[errors.length]
-					),
-					indicator: "red",
-				},
-				4
-			);
-			console.error("Excel View save errors:", errors.map((e) => e.reason));
-		} else {
-			this._dirty = false;
-			this._clear_dirty_indicator();
-			frappe.show_alert({ message: __("Saved"), indicator: "green" }, 1);
+		try {
+			const r = await frappe.call({
+				method: "excel_view.api.bulk_set_value",
+				args: { doctype, updates: JSON.stringify(updates) },
+			});
+			const errors = r.message?.errors || [];
+			if (errors.length) {
+				frappe.show_alert(
+					{ message: __("{0} record(s) failed to save", [errors.length]), indicator: "red" },
+					4
+				);
+			} else {
+				this._dirty = false;
+				this._clear_dirty_indicator();
+				frappe.show_alert({ message: __("Saved"), indicator: "green" }, 1);
+			}
+		} catch (_) {
+			frappe.show_alert({ message: __("Save failed — please retry"), indicator: "red" }, 4);
 		}
 	}
 

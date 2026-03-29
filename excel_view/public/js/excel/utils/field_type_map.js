@@ -130,7 +130,7 @@ frappe.views.excel.get_column_config = function (df, can_write) {
 		case "Time":
 			return {
 				...base,
-				type: "text",
+				type: "ev-time",
 			};
 
 		// ── Select ─────────────────────────────────────────────────────────────

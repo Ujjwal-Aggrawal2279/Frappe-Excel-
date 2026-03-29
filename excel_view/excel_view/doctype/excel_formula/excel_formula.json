@@ -1,0 +1,136 @@
+{
+ "actions": [],
+ "allow_rename": 0,
+ "autoname": "field:formula_name",
+ "creation": "2026-03-25 12:00:00.000000",
+ "doctype": "DocType",
+ "editable_grid": 1,
+ "engine": "InnoDB",
+ "field_order": [
+  "formula_name",
+  "label",
+  "category",
+  "formula_type",
+  "col_break_1",
+  "source_doctype",
+  "target_fieldname",
+  "sec_break_filters",
+  "filters",
+  "sec_break_meta",
+  "description",
+  "is_active",
+  "is_system"
+ ],
+ "fields": [
+  {
+   "fieldname": "formula_name",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Formula Name",
+   "reqd": 1,
+   "description": "Uppercase, underscores only — e.g. MONTHLY_SALES. Used as =MONTHLY_SALES() in the grid."
+  },
+  {
+   "fieldname": "label",
+   "fieldtype": "Data",
+   "in_list_view": 1,
+   "label": "Label"
+  },
+  {
+   "fieldname": "category",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "in_standard_filter": 1,
+   "label": "Category",
+   "options": "Financial\nInventory\nHR\nSales\nCustom"
+  },
+  {
+   "fieldname": "formula_type",
+   "fieldtype": "Select",
+   "in_list_view": 1,
+   "label": "Formula Type",
+   "options": "sum\ncount\navg\nmax\nmin\nget\ngl_balance\nstock_qty\nitem_price\nsmart_lookup",
+   "reqd": 1
+  },
+  {
+   "fieldname": "col_break_1",
+   "fieldtype": "Column Break"
+  },
+  {
+   "fieldname": "source_doctype",
+   "fieldtype": "Link",
+   "label": "Source DocType",
+   "options": "DocType"
+  },
+  {
+   "fieldname": "target_fieldname",
+   "fieldtype": "Data",
+   "label": "Target Fieldname",
+   "description": "The field to aggregate/fetch (e.g. grand_total, outstanding_amount)"
+  },
+  {
+   "fieldname": "sec_break_filters",
+   "fieldtype": "Section Break",
+   "label": "Preset Filters"
+  },
+  {
+   "fieldname": "filters",
+   "fieldtype": "Table",
+   "label": "Filters",
+   "options": "Excel Formula Filter"
+  },
+  {
+   "fieldname": "sec_break_meta",
+   "fieldtype": "Section Break",
+   "label": "Settings"
+  },
+  {
+   "fieldname": "description",
+   "fieldtype": "Small Text",
+   "label": "Description"
+  },
+  {
+   "fieldname": "is_active",
+   "fieldtype": "Check",
+   "label": "Is Active",
+   "default": "1"
+  },
+  {
+   "fieldname": "is_system",
+   "fieldtype": "Check",
+   "label": "System Formula",
+   "read_only": 1,
+   "description": "Built-in formula — cannot be deleted. Loaded from fixtures."
+  }
+ ],
+ "index_web_pages_for_search": 0,
+ "links": [],
+ "modified": "2026-03-25 12:00:00.000000",
+ "modified_by": "Administrator",
+ "module": "Excel View",
+ "name": "Excel Formula",
+ "owner": "Administrator",
+ "permissions": [
+  {
+   "create": 1,
+   "delete": 1,
+   "email": 1,
+   "export": 1,
+   "print": 1,
+   "read": 1,
+   "report": 1,
+   "role": "System Manager",
+   "share": 1,
+   "write": 1
+  },
+  {
+   "read": 1,
+   "role": "All"
+  }
+ ],
+ "sort_field": "formula_name",
+ "sort_order": "ASC",
+ "states": [],
+ "track_changes": 1
+}
