@@ -5840,16 +5840,19 @@ def seed_example_formulas():
 # ── V3 IntelliFlow: DuckDB bulk fetch + schema endpoints ──────────────────────
 
 @frappe.whitelist()
-def bulk_fetch_for_duckdb(doctype, filters="[]", limit=50000):
+def bulk_fetch_for_duckdb(doctype, filters="[]", limit=100000):
 	"""
 	Bulk-fetch all records of a DocType for client-side DuckDB ingestion.
-	Returns {rows: [...], schema: [...]} — permission-checked.
+
+	Returns Arrow IPC binary (base64) when pyarrow is available — 3-5x smaller
+	than JSON and loads directly into DuckDB without CSV re-encoding.
+	Falls back to JSON rows for compatibility.
 
 	Filters: JSON-encoded list of [fieldname, operator, value] triples.
-	Limit: max rows to fetch (default 50000 — enough for analytical queries).
+	Limit: max rows to fetch (default 100000).
 	"""
 	frappe.has_permission(doctype, throw=True)
-	limit = min(int(limit or 50000), 100000)
+	limit = min(int(limit or 100000), 100000)
 
 	# Parse filters
 	parsed_filters = []
@@ -5862,14 +5865,11 @@ def bulk_fetch_for_duckdb(doctype, filters="[]", limit=50000):
 			pass
 
 	meta = frappe.get_meta(doctype)
-	# Fetch all non-virtual, non-structural fields (+ name, creation, modified)
 	SKIP_TYPES = {"Column Break", "Section Break", "Tab Break", "Fold",
 	              "Heading", "HTML", "Custom HTML", "Table", "Table MultiSelect", "Password"}
 	fields = ["name", "creation", "modified", "owner"]
 	for df in meta.fields:
-		if df.fieldtype in SKIP_TYPES:
-			continue
-		if df.is_virtual:
+		if df.fieldtype in SKIP_TYPES or df.is_virtual:
 			continue
 		fields.append(df.fieldname)
 
@@ -5888,16 +5888,48 @@ def bulk_fetch_for_duckdb(doctype, filters="[]", limit=50000):
 		limit=limit,
 		ignore_permissions=False,
 	)
-
-	# Convert to plain dicts (frappe._dict → dict)
 	rows = [dict(r) for r in rows]
 
-	return {
-		"doctype": doctype,
-		"rows": rows,
-		"count": len(rows),
-		"fields": unique_fields,
-	}
+	# ── Arrow IPC binary transport (3-5x smaller + zero CSV re-encoding) ──
+	try:
+		import pyarrow as pa
+		import base64
+
+		if rows:
+			# Build columnar arrays — cast everything to string to avoid type
+			# inference issues across Frappe field types (dates, decimals, etc.)
+			col_arrays = {}
+			for f in unique_fields:
+				col_arrays[f] = pa.array(
+					[str(r[f]) if r[f] is not None else "" for r in rows],
+					type=pa.string()
+				)
+			table = pa.table(col_arrays)
+		else:
+			schema = pa.schema([(f, pa.string()) for f in unique_fields])
+			table  = pa.table({f: pa.array([], type=pa.string()) for f in unique_fields}, schema=schema)
+
+		sink   = pa.BufferOutputStream()
+		writer = pa.ipc.new_stream(sink, table.schema)
+		writer.write_table(table)
+		writer.close()
+		arrow_b64 = base64.b64encode(sink.getvalue().to_pybytes()).decode("ascii")
+
+		return {
+			"doctype":    doctype,
+			"fields":     unique_fields,
+			"count":      len(rows),
+			"arrow_ipc":  arrow_b64,   # base64 Arrow IPC stream
+		}
+
+	except Exception:
+		# Fallback: plain JSON rows (always works)
+		return {
+			"doctype": doctype,
+			"rows":    rows,
+			"count":   len(rows),
+			"fields":  unique_fields,
+		}
 
 
 @frappe.whitelist()

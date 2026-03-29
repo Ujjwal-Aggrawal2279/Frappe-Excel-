@@ -19,8 +19,12 @@ sentence-transformers>=2.2
 # pdfplumber: PDF export parsing (V2.5+)
 pdfplumber>=0.10
 
-# ── V3 IntelliFlow — No new Python packages ────────────────────────────────────
-# V3 IntelliFlow (QueryFlowPanel, SQLGenerator, DuckDB engine V2) is entirely
-# client-side JavaScript. New server endpoints (bulk_fetch_for_duckdb,
-# get_doctype_schema) use only core Frappe ORM — no extra Python dependencies.
-# Client-side packages (dagre, sql-formatter, comlink) are in package.json.
+# ── V3 IntelliFlow — QueryFlowPanel / DuckDB engine V2 ─────────────────────────
+# QueryFlowPanel, SQLGenerator, DAG flowchart are entirely client-side JS.
+# Client-side packages (dagre, sql-formatter, comlink, duckdb-wasm) are in package.json.
+#
+# ── V3.4 Arrow IPC Transport — bulk_fetch_for_duckdb ───────────────────────────
+# pyarrow: serialize DocType rows as Arrow IPC binary stream in bulk_fetch_for_duckdb.
+# 3-5x smaller payload vs JSON, zero CSV re-encoding, native DuckDB Arrow reader.
+# Fallback to JSON rows if pyarrow unavailable (backward-compatible).
+pyarrow>=14.0

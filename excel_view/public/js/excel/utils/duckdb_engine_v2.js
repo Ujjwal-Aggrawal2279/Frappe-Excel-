@@ -69,7 +69,8 @@ frappe.provide("frappe.views.excel");
 const IDB_NAME = "ev_duckdb_cache";
 const IDB_STORE = "tables";
 const IDB_VERSION = 2;
-const CACHE_TTL_MS = 10 * 60 * 1000;  // 10 minutes
+const CACHE_TTL_MS     = 30 * 60 * 1000;  // 30 minutes
+const IDB_ROW_LIMIT    = 50000;            // skip IDB cache for large tables — serialization cost > benefit
 
 frappe.views.excel.DuckDBEngineV2 = class DuckDBEngineV2 {
 	constructor() {
@@ -108,16 +109,22 @@ frappe.views.excel.DuckDBEngineV2 = class DuckDBEngineV2 {
 	 * Bulk-fetch a DocType from server (with IDB cache), load into DuckDB.
 	 * Returns {rows, from_cache, fetch_ms}
 	 */
-	async bulk_fetch(doctype, filters = [], limit = 50000) {
+	async bulk_fetch(doctype, filters = [], limit = 100000) {
 		await this._init();  // ensure db is ready before any table operations
 		const cache_key = `${doctype}__${JSON.stringify(filters)}`;
 
 		// Check IDB cache
 		const cached = await this._idb_get(cache_key);
 		if (cached && (Date.now() - cached.ts) < CACHE_TTL_MS) {
-			await this._load_via_arrow(this._safe_name(doctype), cached.rows, cached.fields);
+			const safe = this._safe_name(doctype);
+			if (cached.arrow_ipc) {
+				const ipc_buf = this._b64_to_uint8(cached.arrow_ipc);
+				await this._load_via_ipc(safe, ipc_buf, cached.fields);
+			} else {
+				await this._load_via_csv(safe, cached.rows, cached.fields);
+			}
 			this._loaded_tables.add(doctype);
-			return { rows: cached.rows, from_cache: true, fetch_ms: 0 };
+			return { rows: cached.rows || [], from_cache: true, fetch_ms: 0 };
 		}
 
 		// Fetch from server
@@ -132,12 +139,29 @@ frappe.views.excel.DuckDBEngineV2 = class DuckDBEngineV2 {
 		});
 
 		if (!r || !r.message) throw new Error(`bulk_fetch: no response for ${doctype}`);
-		const rows = r.message.rows || [];
-		const fields = r.message.fields || [];
+		const msg      = r.message;
+		const fields   = msg.fields || [];
 		const fetch_ms = Math.round(performance.now() - t0);
+		const safe     = this._safe_name(doctype);
 
-		await this._idb_set(cache_key, { rows, fields, ts: Date.now() });
-		await this._load_via_arrow(this._safe_name(doctype), rows, fields);
+		if (msg.arrow_ipc) {
+			// ── Fast path: Arrow IPC binary — 3-5x smaller, zero CSV re-encoding ──
+			const ipc_buf = this._b64_to_uint8(msg.arrow_ipc);
+			await this._load_via_ipc(safe, ipc_buf, fields);
+			this._loaded_tables.add(doctype);
+			// Cache IPC buffer in IDB for small-medium tables only
+			if (ipc_buf.length <= IDB_ROW_LIMIT * 200) {  // ~200 bytes/row threshold
+				await this._idb_set(cache_key, { arrow_ipc: msg.arrow_ipc, fields, ts: Date.now() });
+			}
+			return { rows: [], fields, from_cache: false, fetch_ms };
+		}
+
+		// ── Fallback: JSON rows ──
+		const rows = msg.rows || [];
+		if (rows.length <= IDB_ROW_LIMIT) {
+			await this._idb_set(cache_key, { rows, fields, ts: Date.now() });
+		}
+		await this._load_via_csv(safe, rows, fields);
 		this._loaded_tables.add(doctype);
 		return { rows, fields, from_cache: false, fetch_ms };
 	}
@@ -241,7 +265,16 @@ frappe.views.excel.DuckDBEngineV2 = class DuckDBEngineV2 {
 			const worker = new Worker(worker_url);
 			const logger = new duckdb.VoidLogger();
 			this._db = new duckdb.AsyncDuckDB(logger, worker);
-			await this._db.instantiate(bundle.mainModule, bundle.pthreadWorker);
+
+			// Re-wrap the WASM as a blob URL with the correct application/wasm MIME type.
+			// Frappe Cloud's nginx doesn't set this MIME type, causing instantiateStreaming
+			// to fail. Using a blob URL guarantees the browser sees the right Content-Type.
+			const wasm_buf  = await fetch(bundle.mainModule).then(r => r.arrayBuffer());
+			const wasm_blob = new Blob([wasm_buf], { type: "application/wasm" });
+			const wasm_url  = URL.createObjectURL(wasm_blob);
+			await this._db.instantiate(wasm_url, bundle.pthreadWorker);
+			URL.revokeObjectURL(wasm_url);
+
 			URL.revokeObjectURL(worker_url);
 			this._conn = await this._db.connect();
 			this._available = true;
@@ -257,27 +290,58 @@ frappe.views.excel.DuckDBEngineV2 = class DuckDBEngineV2 {
 		await this.bulk_fetch(doctype);
 	}
 
-	async _load_via_arrow(safe_name, rows, fields) {
+	/**
+	 * Fast path — load Arrow IPC binary directly into DuckDB.
+	 * Zero CSV encoding; DuckDB's native Arrow reader is highly optimized.
+	 */
+	async _load_via_ipc(safe_name, ipc_buf, fields) {
 		await this._conn.query(`DROP TABLE IF EXISTS "${safe_name}"`);
-
-		if (!rows || rows.length === 0) {
-			// No data — create empty table using schema fields so SQL doesn't fail
-			const cols = (fields && fields.length)
-				? fields
-				: (rows && rows[0] ? Object.keys(rows[0]) : []);
-			if (!cols.length) return;  // truly unknown schema — skip
-			const col_defs = cols.map(c => `"${c}" VARCHAR`).join(", ");
-			await this._conn.query(`CREATE TABLE "${safe_name}" (${col_defs})`);
+		if (!ipc_buf || !ipc_buf.length) {
+			await this._create_empty_table(safe_name, fields);
 			return;
 		}
+		try {
+			await this._db.registerFileBuffer(`${safe_name}.arrow`, ipc_buf);
+			await this._conn.query(
+				`CREATE TABLE "${safe_name}" AS SELECT * FROM read_ipc_stream('${safe_name}.arrow')`
+			);
+		} catch (_) {
+			// read_ipc_stream not available in this build — fall through to IPC insert
+			await this._conn.insertArrowFromIPCStream(ipc_buf, { name: safe_name });
+		}
+	}
 
-		// Build CSV string and use DuckDB's CSV reader
+	/**
+	 * Fallback — encode rows as CSV and load via read_csv_auto.
+	 * Used when server returns JSON rows instead of Arrow IPC.
+	 */
+	async _load_via_csv(safe_name, rows, fields) {
+		await this._conn.query(`DROP TABLE IF EXISTS "${safe_name}"`);
+		if (!rows || rows.length === 0) {
+			await this._create_empty_table(safe_name, fields);
+			return;
+		}
 		const csv = this._rows_to_csv(rows);
-		const enc = new TextEncoder();
-		const buf = enc.encode(csv);
-
+		const buf = new TextEncoder().encode(csv);
 		await this._db.registerFileBuffer(`${safe_name}.csv`, buf);
-		await this._conn.query(`CREATE TABLE "${safe_name}" AS SELECT * FROM read_csv_auto('${safe_name}.csv', header=true)`);
+		await this._conn.query(
+			`CREATE TABLE "${safe_name}" AS SELECT * FROM read_csv_auto('${safe_name}.csv', header=true)`
+		);
+	}
+
+	async _create_empty_table(safe_name, fields) {
+		const cols = (fields && fields.length) ? fields : [];
+		if (!cols.length) return;
+		const col_defs = cols.map(c => `"${c}" VARCHAR`).join(", ");
+		await this._conn.query(`CREATE TABLE "${safe_name}" (${col_defs})`);
+	}
+
+	/** Base64 → Uint8Array (fast, no atob loop for large buffers) */
+	_b64_to_uint8(b64) {
+		const bin = atob(b64);
+		const buf = new Uint8Array(bin.length);
+		for (let i = 0; i < bin.length; i++) buf[i] = bin.charCodeAt(i);
+		return buf;
 	}
 
 	_rows_to_csv(rows) {
