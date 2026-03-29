@@ -5,6 +5,17 @@ app_description = "Adding Excel View as default view"
 app_email = "ujjmee2279@gmail.com"
 app_license = "mit"
 
+# Fixtures — system Excel Formula records shipped with the app
+fixtures = [
+	{
+		"dt": "Excel Formula",
+		"filters": [["is_system", "=", 1]],
+	}
+]
+
+# Boot — inject active formula configs so JS can register them before HOT init
+extend_bootinfo = "excel_view.api.extend_bootinfo"
+
 # Apps
 # ------------------
 
@@ -145,13 +156,17 @@ app_include_css = ["excel_view.bundle.css", "collaboration_dialog.bundle.css"]
 # ---------------
 # Hook on document methods and events
 
-# doc_events = {
-# 	"*": {
-# 		"on_update": "method",
-# 		"on_cancel": "method",
-# 		"on_trash": "method"
-# 	}
-# }
+# Invalidate formula-cell Redis cache whenever any document is saved/deleted.
+# This ensures FRAPPE_SUM / COUNT / AVG / GET cells never show stale data
+# beyond the 30-second TTL even when a related document changes mid-session.
+doc_events = {
+	"*": {
+		"after_insert": "excel_view.api._invalidate_agg_cache_for_doctype",
+		"on_update":    "excel_view.api._invalidate_agg_cache_for_doctype",
+		"on_cancel":    "excel_view.api._invalidate_agg_cache_for_doctype",
+		"on_trash":     "excel_view.api._invalidate_agg_cache_for_doctype",
+	}
+}
 
 # Scheduled Tasks
 # ---------------

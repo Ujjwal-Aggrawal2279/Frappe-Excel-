@@ -208,22 +208,51 @@ def frappe_get(doctype: str, name: str, fieldname: str) -> dict:
     """
     Fetch a single field value from one document.
 
-    Supports dot-notation to follow one Link field hop:
-        FRAPPE_GET("Sales Person", "Arjun Sharma", "employee.ctc")
-        → reads Sales Person.employee (Link→Employee), then Employee.ctc
+    Three access patterns are supported:
+
+    1. Plain field:
+           FRAPPE_GET("Customer", "Tata Motors", "credit_limit")
+
+    2. Link-field traversal (dot notation — walks Link hops):
+           FRAPPE_GET("Sales Person", "Arjun Sharma", "employee.ctc")
+           → reads Sales Person.employee (Link→Employee), then Employee.ctc
+
+    3. Child-table row access (bracket notation):
+           FRAPPE_GET("Sales Invoice", "SINV-0001", "items[1].amount")
+           → returns the `amount` field of the 1st row in the items child table
+           The row index is 1-based. Returns None if row does not exist.
 
     Returns:
         {"value": <field_value>}
     """
+    import re
     frappe.has_permission(doctype, "read", throw=True)
 
+    # ── Pattern 3: child table bracket notation — "items[2].rate" ────────────
+    child_match = re.match(r"^(\w+)\[(\d+)\]\.(\w+)$", fieldname)
+    if child_match:
+        child_field     = child_match.group(1)
+        row_idx         = int(child_match.group(2)) - 1   # 1-based → 0-based
+        child_fieldname = child_match.group(3)
+
+        meta = frappe.get_meta(doctype)
+        df   = meta.get_field(child_field)
+        if not df or df.fieldtype not in ("Table", "Table MultiSelect"):
+            frappe.throw(_(f"'{child_field}' is not a Table field on {doctype}"))
+
+        doc  = frappe.get_doc(doctype, name)
+        rows = doc.get(child_field) or []
+        if row_idx < 0 or row_idx >= len(rows):
+            return {"value": None}
+        return {"value": rows[row_idx].get(child_fieldname)}
+
+    # ── Pattern 2: Link-field traversal — "employee.ctc" ─────────────────────
     if "." in fieldname:
-        # Walk each hop: "ev_sales_person.employee.ctc" → 2 link hops
-        parts = fieldname.split(".")
+        parts           = fieldname.split(".")
         current_doctype = doctype
         current_name    = name
 
-        for part in parts[:-1]:   # all but last part are link fields to traverse
+        for part in parts[:-1]:   # all but last are link fields to traverse
             _validate_fieldname(current_doctype, part)
             meta = frappe.get_meta(current_doctype)
             df   = meta.get_field(part)
@@ -239,8 +268,241 @@ def frappe_get(doctype: str, name: str, fieldname: str) -> dict:
         _validate_fieldname(current_doctype, final_field)
         return {"value": frappe.db.get_value(current_doctype, current_name, final_field)}
 
+    # ── Pattern 1: plain field ────────────────────────────────────────────────
     _validate_fieldname(doctype, fieldname)
     return {"value": frappe.db.get_value(doctype, name, fieldname)}
+
+
+@frappe.whitelist()
+def bulk_set_value(doctype: str, updates: str) -> dict:
+    """
+    Update multiple existing records of the same DocType in one server round-trip.
+
+    updates: JSON array of {name: str, fields: {fieldname: value, ...}}
+
+    All writes run sequentially in a single transaction — no concurrent locks,
+    no MySQL deadlocks. A single frappe.db.commit() at the end commits everything.
+    Returns {"errors": [{"name": ..., "error": ...}, ...]} — empty list = all OK.
+    """
+    frappe.has_permission(doctype, "write", throw=True)
+
+    updates_data: list[dict] = frappe.parse_json(updates)
+    errors: list[dict] = []
+    saved_names: list[str] = []
+
+    for item in updates_data:
+        name   = item.get("name")
+        fields = item.get("fields") or {}
+        if not name or not fields:
+            continue
+        try:
+            frappe.db.set_value(doctype, name, fields)
+            saved_names.append(name)
+        except Exception as exc:
+            errors.append({"name": name, "error": str(exc)})
+
+    if saved_names:
+        # Queue list_update events before commit so flush_realtime_log fires
+        # with the commit below — same pattern as Document.notify_update().
+        for name in saved_names:
+            frappe.publish_realtime(
+                "list_update",
+                {"doctype": doctype, "name": name, "user": frappe.session.user},
+                after_commit=True,
+            )
+        frappe.db.commit()
+
+    return {"errors": errors}
+
+
+@frappe.whitelist()
+def bulk_create_records(doctype: str, rows: str) -> dict:
+    """
+    Create multiple new Frappe documents from a JSON array of field-value dicts.
+
+    Args:
+        doctype: Target DocType, e.g. "Customer"
+        rows:    JSON string — [{fieldname: value, ...}, ...]
+                 Empty-string values are skipped (treated as unset).
+
+    Returns:
+        {
+            "created": [{"idx": 0, "name": "CUST-001"}, ...],
+            "errors":  [{"idx": 1, "message": "Customer Name is required"}, ...]
+        }
+
+    Security: caller must have Create permission on the DocType.
+    Each document is saved with the caller's permissions (no ignore_permissions).
+    """
+    frappe.has_permission(doctype, "create", throw=True)
+
+    rows_data: list[dict] = frappe.parse_json(rows)
+    created: list[dict]   = []
+    errors:  list[dict]   = []
+
+    for idx, row in enumerate(rows_data):
+        try:
+            doc = frappe.new_doc(doctype)
+            for field, value in row.items():
+                # Skip empty values — let Frappe apply its own defaults
+                if value is not None and value != "":
+                    doc.set(field, value)
+            doc.insert()
+            created.append({"idx": idx, "name": doc.name})
+        except Exception as exc:
+            errors.append({"idx": idx, "message": str(exc)})
+
+    if created:
+        frappe.db.commit()
+
+    return {"created": created, "errors": errors}
+
+
+@frappe.whitelist()
+def batch_check_links(doctype: str, rows_json: str, link_fields_json: str) -> dict:
+    """
+    Check which linked values in the rows don't exist in their target DocTypes.
+
+    Args:
+        doctype:          Source DocType being imported into (for permission check).
+        rows_json:        JSON array of {fieldname: value} dicts (already mapped).
+        link_fields_json: JSON array of {fieldname, options} describing Link fields.
+
+    Returns:
+        {"missing": {fieldname: [val1, val2, ...]}}
+        Only fieldnames with at least one missing value are included.
+    """
+    frappe.has_permission(doctype, "create", throw=True)
+
+    rows: list[dict] = frappe.parse_json(rows_json)
+    link_fields: list[dict] = frappe.parse_json(link_fields_json)
+
+    missing: dict[str, list[str]] = {}
+
+    for lf in link_fields:
+        fn = lf.get("fieldname")
+        options_dt = lf.get("options")
+        if not fn or not options_dt:
+            continue
+
+        # Collect unique non-empty values from the rows
+        values = list({str(r.get(fn, "")).strip() for r in rows if r.get(fn)})
+        if not values:
+            continue
+
+        try:
+            existing = {
+                r["name"]
+                for r in frappe.get_list(
+                    options_dt,
+                    filters=[["name", "in", values]],
+                    fields=["name"],
+                    limit=len(values) + 1,
+                    ignore_permissions=False,
+                )
+            }
+        except Exception:
+            continue
+
+        missing_vals = [v for v in values if v not in existing]
+        if missing_vals:
+            missing[fn] = missing_vals
+
+    return {"missing": missing}
+
+
+@frappe.whitelist()
+def create_link_record(doctype: str, value: str) -> dict:
+    """
+    Create a minimal record in a Link DocType with the given name/value.
+    Determines the correct primary field from meta.autoname.
+
+    Returns {"name": created_doc_name, "doctype": doctype}
+    """
+    frappe.has_permission(doctype, "create", throw=True)
+
+    meta = frappe.get_meta(doctype)
+    doc  = frappe.new_doc(doctype)
+    autoname = meta.autoname or ""
+
+    if autoname.lower().startswith("field:"):
+        # e.g. "field:item_code" → set that field
+        primary_field = autoname.split(":", 1)[1].strip()
+        doc.set(primary_field, value)
+    elif autoname.lower() in ("prompt", "name"):
+        doc.name = value
+    else:
+        # Fallback: set first required Data field that is empty
+        for f in meta.fields:
+            if f.reqd and f.fieldtype == "Data" and not doc.get(f.fieldname):
+                doc.set(f.fieldname, value)
+                break
+
+    # Fill remaining required fields so insert() doesn't throw MandatoryError.
+    # - Data/Text fields   → use `value` as a sensible default
+    # - Link fields        → use first existing record in the linked doctype
+    # - Select fields      → use first option in the options list
+    for f in meta.fields:
+        if not f.reqd or doc.get(f.fieldname):
+            continue
+        if f.fieldtype in ("Data", "Small Text", "Text", "Long Text"):
+            doc.set(f.fieldname, value)
+        elif f.fieldtype == "Link" and f.options:
+            first_val = frappe.db.get_value(f.options, {}, "name")
+            if first_val:
+                doc.set(f.fieldname, first_val)
+        elif f.fieldtype == "Select" and f.options:
+            first_opt = (f.options or "").strip().split("\n")[0]
+            if first_opt:
+                doc.set(f.fieldname, first_opt)
+
+    doc.insert(ignore_permissions=False)
+    frappe.db.commit()
+    return {"name": doc.name, "doctype": doctype}
+
+
+@frappe.whitelist()
+def frappe_child_get(
+    parent_doctype: str,
+    parent_name: str,
+    child_field: str,
+    row_index: int,
+    fieldname: str,
+) -> dict:
+    """
+    Fetch one field from a specific row of a child table.
+
+    Args:
+        parent_doctype: e.g. "Sales Invoice"
+        parent_name:    e.g. "SINV-0001"
+        child_field:    Table fieldname on the parent, e.g. "items"
+        row_index:      1-based row number (1 = first row)
+        fieldname:      field to read from that child row, e.g. "amount"
+
+    Returns:
+        {"value": <field_value>}   — None if row does not exist
+
+    Example:
+        FRAPPE_CHILD_GET("Sales Invoice", "SINV-0001", "items", 1, "amount")
+        → grand total of the first line item
+    """
+    frappe.has_permission(parent_doctype, "read", throw=True)
+
+    meta = frappe.get_meta(parent_doctype)
+    df   = meta.get_field(child_field)
+    if not df or df.fieldtype not in ("Table", "Table MultiSelect"):
+        frappe.throw(_(f"'{child_field}' is not a Table field on {parent_doctype}"))
+
+    row_idx = int(row_index) - 1   # 1-based → 0-based
+    if row_idx < 0:
+        frappe.throw(_("row_index must be ≥ 1"))
+
+    doc  = frappe.get_doc(parent_doctype, parent_name)
+    rows = doc.get(child_field) or []
+    if row_idx >= len(rows):
+        return {"value": None}
+
+    return {"value": rows[row_idx].get(fieldname)}
 
 
 @frappe.whitelist()
@@ -265,11 +527,11 @@ def frappe_aggregate(
     frappe.has_permission(doctype, "read", throw=True)
 
     aggr_type = (aggr_type or "sum").lower()
-    if aggr_type not in ("sum", "count", "avg"):
-        frappe.throw(_("aggr_type must be 'sum', 'count', or 'avg'."))
+    if aggr_type not in ("sum", "count", "avg", "max", "min"):
+        frappe.throw(_("aggr_type must be 'sum', 'count', 'avg', 'max', or 'min'."))
 
     if aggr_type != "count" and not fieldname:
-        frappe.throw(_("fieldname is required for sum/avg aggregates."))
+        frappe.throw(_("fieldname is required for sum/avg/max/min aggregates."))
 
     if aggr_type != "count" and fieldname:
         _validate_fieldname(doctype, fieldname)
@@ -287,15 +549,1101 @@ def frappe_aggregate(
         ignore_permissions=False,
     )
 
-    vals = [float(r[fieldname]) for r in rows if r.get(fieldname) is not None]
+    raw_vals = [r[fieldname] for r in rows if r.get(fieldname) is not None]
 
-    if not vals:
-        return {"value": 0}
+    if not raw_vals:
+        return {"value": 0 if aggr_type in ("sum", "avg") else ""}
+
+    # max/min work on strings (ISO dates sort lexicographically) — no float cast
+    if aggr_type == "max":
+        return {"value": max(raw_vals)}
+    if aggr_type == "min":
+        return {"value": min(raw_vals)}
+
+    vals = [float(v) for v in raw_vals]
 
     if aggr_type == "sum":
         return {"value": sum(vals)}
 
     return {"value": sum(vals) / len(vals)}
+
+
+_AGG_BATCH_TTL = 30  # seconds — formula cells feel live; Redis not hammered on every keystroke
+
+
+def _agg_batch_cache_key(raw: str) -> str:
+	"""Stable Redis key: user + MD5 of the raw JSON queries string."""
+	import hashlib
+	digest = hashlib.md5(raw.encode(), usedforsecurity=False).hexdigest()
+	return f"ev_agg_batch:{frappe.session.user}:{digest}"
+
+
+def _invalidate_agg_cache_for_doctype(doc, method=None) -> None:
+	"""
+	Purge all cached batch aggregate results.
+
+	Called as a Frappe document hook (after_insert / on_update / on_cancel /
+	on_trash) whenever any document is saved so formula cells referencing the
+	changed doctype are recomputed on the next grid load rather than returning
+	stale Redis-cached values.
+
+	Frappe's Redis cache key space is small (only cached values, not session/
+	queue data) so the prefix scan is fast in practice.
+	"""
+	frappe.cache().delete_keys("ev_agg_batch:*")
+
+
+@frappe.whitelist()
+def frappe_aggregate_batch(queries: str) -> dict:
+	"""
+	Batch endpoint for FRAPPE_SUM / COUNT / AVG / MAX / MIN / GET formula functions.
+
+	Receives a JSON array of aggregate query descriptors and returns results in
+	the same order.  Queries that share the same (aggr_type, doctype, fieldname,
+	fk1 key, static tail-filters fk2-fk4) are merged into a single SQL
+	``WHERE fk1 IN (...) GROUP BY fk1`` — converting N DB round-trips into 1.
+
+	Results are cached in Frappe's Redis layer for _AGG_BATCH_TTL seconds.
+	Cache is automatically invalidated when any document is saved (see hooks).
+
+	Returns:
+	    {"results": [value, ...]}   — parallel to the input *queries* array.
+	"""
+	raw: str = queries if isinstance(queries, str) else frappe.as_json(queries)
+	qs: list = frappe.parse_json(raw) if isinstance(queries, str) else (queries or [])
+	if not qs:
+		return {"results": []}
+
+	# ── Redis cache check ────────────────────────────────────────────────────
+	import time as _time
+	t0 = _time.monotonic()
+	cache_key = _agg_batch_cache_key(raw)
+	cached = frappe.cache().get_value(cache_key)
+	if cached is not None:
+		cached["_cache"] = "hit"
+		return cached
+
+	results: list = [None] * len(qs)
+
+	# ── Group queries for IN-query optimisation ─────────────────────────────
+	# Group key: (aggr_type, doctype, fieldname, fk1 [simple field — no operator],
+	#             fk2+fv2, fk3+fv3, fk4+fv4 static filters)
+	# Only fv1 varies within a group — each row has a different FK value.
+	groups: dict = {}   # group_key → [(index, fv1), ...]
+	solo:   list = []   # [(index, query_dict), ...] — cannot be batched
+
+	for i, q in enumerate(qs):
+		aggr_type = (q.get("aggr_type") or "sum").lower()
+		doctype   = str(q.get("doctype") or "")
+		fieldname = str(q.get("fieldname") or "name")
+		fk1 = str(q.get("fk1") or "")
+		fv1 = q.get("fv1")
+		fk2 = str(q.get("fk2") or "")
+		fv2 = q.get("fv2")
+		fk3 = str(q.get("fk3") or "")
+		fv3 = q.get("fv3")
+		fk4 = str(q.get("fk4") or "")
+		fv4 = q.get("fv4")
+
+		# Batch only when fk1 is a plain field name (no trailing operator like ">="
+		# or "!=") and fv1 is a non-empty scalar.
+		can_group = bool(
+			fk1
+			and fv1 is not None
+			and fv1 != ""
+			and " " not in fk1.strip()
+		)
+
+		if can_group:
+			gk = (
+				aggr_type, doctype, fieldname, fk1,
+				fk2, str(fv2) if fv2 is not None else "",
+				fk3, str(fv3) if fv3 is not None else "",
+				fk4, str(fv4) if fv4 is not None else "",
+			)
+			groups.setdefault(gk, []).append((i, fv1))
+		else:
+			solo.append((i, q))
+
+	# ── Execute groups (IN-query) ────────────────────────────────────────────
+	for gk, items in groups.items():
+		aggr_type, doctype, fieldname, fk1, fk2, fv2s, fk3, fv3s, fk4, fv4s = gk
+
+		# Permission check (once per group)
+		try:
+			frappe.has_permission(doctype, "read", throw=True)
+		except frappe.PermissionError:
+			for idx, _ in items:
+				results[idx] = "#PERM_DENIED"
+			continue
+
+		# Validate field names before embedding in SQL.
+		# frappe.throw() raises frappe.ValidationError (a subclass of Exception),
+		# NOT DoesNotExistError — catch the base Exception to be safe.
+		try:
+			if aggr_type not in ("count", "get"):
+				_validate_fieldname(doctype, fieldname)
+			if aggr_type != "get":
+				_validate_fieldname(doctype, fk1)
+			else:
+				# "get" uses fk1="name" which is always a valid system field
+				_validate_fieldname(doctype, fieldname)
+		except Exception:
+			for idx, _ in items:
+				results[idx] = "#ARG!"
+			continue
+
+		# ── "get" path: SELECT name, fieldname FROM tab WHERE name IN (...) ──
+		if aggr_type == "get":
+			try:
+				placeholders = ", ".join(["%s"] * len(unique_vals))
+				sql = (
+					f"SELECT `name`, `{fieldname}`"
+					f" FROM `tab{doctype}`"
+					f" WHERE `name` IN ({placeholders})"
+				)
+				rows    = frappe.db.sql(sql, unique_vals, as_dict=False)
+				agg_map = {str(r[0]): r[1] for r in rows}
+			except Exception:
+				for idx, fv1 in items:
+					solo.append((idx, {"aggr_type": "get", "doctype": doctype,
+					                   "fieldname": fieldname, "fk1": "name", "fv1": fv1}))
+				continue
+			for fv1_str, idxs in fv1_to_idxs.items():
+				val = agg_map.get(fv1_str, "")
+				for idx in idxs:
+					results[idx] = val
+			continue
+
+		# Map fv1 → [indices] (handles duplicate FK values across rows)
+		fv1_to_idxs: dict = {}
+		for idx, fv1 in items:
+			fv1_to_idxs.setdefault(str(fv1), []).append(idx)
+		unique_vals = list(fv1_to_idxs.keys())
+
+		if len(unique_vals) == 1:
+			# Single distinct value — delegate to the existing scalar endpoint
+			res = frappe_aggregate(
+				doctype=doctype, fieldname=fieldname, aggr_type=aggr_type,
+				fk1=fk1, fv1=unique_vals[0],
+				fk2=fk2 or None, fv2=fv2s or None,
+				fk3=fk3 or None, fv3=fv3s or None,
+				fk4=fk4 or None, fv4=fv4s or None,
+			)
+			val = res.get("value", 0)
+			for idx in fv1_to_idxs[unique_vals[0]]:
+				results[idx] = val
+			continue
+
+		# Build IN-query SQL (fk1 and fieldname already validated — safe as identifiers)
+		table   = f"`tab{doctype}`"
+		fk1_col = f"`{fk1}`"
+
+		if aggr_type == "sum":
+			agg_expr = f"SUM(`{fieldname}`)"
+			default  = 0
+		elif aggr_type == "avg":
+			agg_expr = f"AVG(`{fieldname}`)"
+			default  = 0
+		elif aggr_type == "max":
+			agg_expr = f"MAX(`{fieldname}`)"
+			default  = ""
+		elif aggr_type == "min":
+			agg_expr = f"MIN(`{fieldname}`)"
+			default  = ""
+		else:  # count
+			agg_expr = "COUNT(*)"
+			default  = 0
+
+		# Static tail-filters (fk2-fk4).
+		# Supports operator-style keys like "transaction_date >=" — split off the
+		# operator before validating the fieldname and before embedding in SQL.
+		extra_sql    = ""
+		extra_params: list = []
+		for fk, fv in ((fk2, fv2s), (fk3, fv3s), (fk4, fv4s)):
+			if not fk or not fv:
+				continue
+			parts = fk.rsplit(" ", 1)
+			if len(parts) == 2 and parts[1].lower() in _FILTER_OPS:
+				field, op = parts[0].strip(), parts[1].strip()
+			else:
+				field, op = fk.strip(), "="
+			try:
+				_validate_fieldname(doctype, field)
+			except Exception:
+				continue
+			extra_sql    += f" AND `{field}` {op} %s"
+			extra_params.append(fv)
+
+		placeholders = ", ".join(["%s"] * len(unique_vals))
+		sql = (
+			f"SELECT {fk1_col}, {agg_expr}"
+			f" FROM {table}"
+			f" WHERE {fk1_col} IN ({placeholders}){extra_sql}"
+			f" GROUP BY {fk1_col}"
+		)
+		params = unique_vals + extra_params
+
+		try:
+			rows    = frappe.db.sql(sql, params, as_dict=False)
+			agg_map = {str(r[0]): r[1] for r in rows}
+		except Exception:
+			# SQL failure — fall back to individual scalar calls for this group
+			for idx, q in [(idx, {"aggr_type": aggr_type, "doctype": doctype,
+			                       "fieldname": fieldname, "fk1": fk1, "fv1": fv1,
+			                       "fk2": fk2 or None, "fv2": fv2s or None,
+			                       "fk3": fk3 or None, "fv3": fv3s or None,
+			                       "fk4": fk4 or None, "fv4": fv4s or None})
+			               for idx, fv1 in items]:
+				solo.append((idx, q))
+			continue
+
+		for fv1_str, idxs in fv1_to_idxs.items():
+			val = agg_map.get(fv1_str, default)
+			for idx in idxs:
+				results[idx] = val
+
+	# ── Execute solo queries (ungroupable — operator filters, empty fv1, etc.) ─
+	# (also receives "get" fallbacks pushed here by the group section)
+	for idx, q in solo:
+		try:
+			aggr_type_s = (q.get("aggr_type") or "sum").lower()
+			if aggr_type_s == "get":
+				# Single FRAPPE_GET fallback — use frappe.get_value
+				val = frappe.get_value(
+					q.get("doctype", ""),
+					q.get("fv1"),          # the document name
+					q.get("fieldname") or "name",
+				)
+				results[idx] = val if val is not None else ""
+			else:
+				res = frappe_aggregate(
+					doctype   = q.get("doctype", ""),
+					fieldname = q.get("fieldname") or "name",
+					aggr_type = aggr_type_s,
+					fk1=q.get("fk1"), fv1=q.get("fv1"),
+					fk2=q.get("fk2"), fv2=q.get("fv2"),
+					fk3=q.get("fk3"), fv3=q.get("fv3"),
+					fk4=q.get("fk4"), fv4=q.get("fv4"),
+				)
+				results[idx] = res.get("value", 0)
+		except Exception:
+			results[idx] = "#ERR!"
+
+	# ── Cache and return ─────────────────────────────────────────────────────
+	elapsed_ms = round((_time.monotonic() - t0) * 1000)
+	out = {"results": results, "_cache": "miss", "_ms": elapsed_ms}
+	frappe.cache().set_value(cache_key, out, expires_in_sec=_AGG_BATCH_TTL)
+	return out
+
+
+# ── Dashboard formula-column card aggregate ────────────────────────────────────
+
+
+@frappe.whitelist()
+def compute_card_aggregate(
+    doctype: str,
+    formula: str,
+    col_fieldnames: str,
+    filter_op: str,
+    filter_val: str,
+    aggregate: str,
+    agg_fieldname: str | None = None,
+    list_filters: str | None = None,
+    extra_filters: str | None = None,
+    period_start: str | None = None,
+    period_end: str | None = None,
+) -> dict:
+    """
+    Server-side number card computation for formula columns (⚡).
+
+    Fetches ALL rows for the DocType (no page-limit cap), evaluates the
+    HyperFormula template formula for every row, applies the card filter and
+    any extra plain-field filters, then returns the requested aggregate.
+
+    Parameters
+    ----------
+    doctype         : Source DocType (the sheet's doctype)
+    formula         : HyperFormula formula template, e.g.
+                      ``=IF(FRAPPE_COUNT("Sales Order","customer",A1)>0,"Active","Inactive")``
+    col_fieldnames  : JSON array of fieldnames in column order (A→[0], B→[1], …)
+    filter_op       : Operator on the formula result: ``=``, ``!=``, ``contains``,
+                      ``>``, ``<``, ``>=``, ``<=``
+    filter_val      : Value to compare the formula result against
+    aggregate       : ``count`` | ``sum`` | ``avg`` | ``min`` | ``max``
+    agg_fieldname   : DB fieldname for sum/avg/min/max (ignored for count)
+    list_filters    : JSON array of Frappe filter tuples (current sheet filters)
+    extra_filters   : JSON array of ``{col, op, val}`` dicts for non-formula
+                      card filters applied after formula evaluation
+    """
+    import json
+
+    _check_doctype_permission(doctype)
+
+    col_fields: list = json.loads(col_fieldnames) if isinstance(col_fieldnames, str) else (col_fieldnames or [])
+    lst_filters: list = json.loads(list_filters) if isinstance(list_filters, str) and list_filters else []
+    extra: list = json.loads(extra_filters) if isinstance(extra_filters, str) and extra_filters else []
+
+    # agg_fieldname may be a formula/virtual col key (starts with _) — never a real DB field
+    agg_field = (agg_fieldname or "").strip() or None
+    if agg_field and agg_field.startswith("_"):
+        agg_field = None
+
+    # Substitute PERIOD_START() / PERIOD_END() placeholders with actual dates
+    # (the client resolves these via formula_manager; pass them down so the server
+    # can build correct SQL filters for formulas like FRAPPE_COUNT(...,PERIOD_START(),...))
+    if period_start or period_end:
+        formula = formula.replace("PERIOD_START()", f'"{period_start or ""}"')
+        formula = formula.replace("PERIOD_END()",   f'"{period_end   or ""}"')
+
+    # ── Determine which DB fields we need ────────────────────────────────
+    import re
+
+    fetch_fields: set = {"name"}
+    for ref in re.findall(r'([A-Z]+)1\b', formula, re.IGNORECASE):
+        idx = _col_letter_to_index(ref.upper())
+        if idx < len(col_fields):
+            fetch_fields.add(col_fields[idx])
+    # agg_field is None if it was a virtual/formula col — skip it
+    if agg_field:
+        fetch_fields.add(agg_field)
+    for ef in extra:
+        col = (ef.get("col") or "").strip()
+        if col and not col.startswith("_"):
+            fetch_fields.add(col)
+
+    # ── Strategy 1: SQL-first (no row fetching) ───────────────────────────
+    # Parses the formula into a subquery + COUNT — 2 DB queries, zero memory.
+    sql_result = _try_sql_formula_compute(
+        doctype, formula, col_fields,
+        filter_op, str(filter_val), aggregate, agg_field,
+        lst_filters, extra,
+    )
+    if sql_result is not None:
+        return {"value": sql_result}
+
+    # ── Strategy 2: Row-fetch fallback (unparseable formulas) ─────────────
+    # Hard cap: 50 000 rows.  Warns if data was truncated.
+    _ROW_CAP = 50_000
+    rows = frappe.get_all(
+        doctype,
+        fields=list(fetch_fields),
+        filters=lst_filters,
+        limit=_ROW_CAP + 1,
+    )
+    truncated = len(rows) > _ROW_CAP
+    if truncated:
+        rows = rows[:_ROW_CAP]
+
+    # ── Evaluate HyperFormula template for every row → row["_val"] ───────
+    _eval_formula_bulk(formula, rows, col_fields)
+
+    # ── Apply formula column filter ───────────────────────────────────────
+    rows = [r for r in rows if _card_match(str(r.get("_val", "")), filter_op, str(filter_val))]
+
+    # ── Apply any extra plain-field card filters ──────────────────────────
+    for ef in extra:
+        col, op, val = (ef.get("col") or ""), (ef.get("op") or "="), str(ef.get("val") or "")
+        if not col or col.startswith("_"):
+            continue
+        rows = [r for r in rows if _card_match(str(r.get(col, "") or ""), op, val)]
+
+    # ── Compute aggregate ─────────────────────────────────────────────────
+    if aggregate == "count":
+        result = len(rows)
+        return {"value": result, "truncated": truncated}
+
+    if not agg_field:
+        return {"value": len(rows), "truncated": truncated}
+
+    nums = []
+    for r in rows:
+        try:
+            nums.append(float(r.get(agg_field) or 0))
+        except (TypeError, ValueError):
+            pass
+
+    if not nums:
+        return {"value": 0}
+
+    if aggregate == "sum":
+        return {"value": round(sum(nums), 2), "truncated": truncated}
+    if aggregate == "avg":
+        return {"value": round(sum(nums) / len(nums), 2), "truncated": truncated}
+    if aggregate == "min":
+        return {"value": round(min(nums), 2), "truncated": truncated}
+    if aggregate == "max":
+        return {"value": round(max(nums), 2), "truncated": truncated}
+    return {"value": len(rows), "truncated": truncated}
+
+
+# ── SQL-first formula compute ──────────────────────────────────────────────────
+
+
+def _try_sql_formula_compute(
+    doctype, formula, col_fields,
+    filter_op, filter_val, aggregate, agg_field,
+    lst_filters, extra_filters,
+):
+    """
+    Push formula-column card computation entirely into SQL — zero row fetching.
+
+    Supports (any combination):
+      =IF(FRAPPE_COUNT("DT", [fk,fv …], A1, …)  op  N,   "t", "f")
+      =IF(FRAPPE_SUM  ("DT","sum_field",[fk,fv …],A1,…) op N, "t","f")
+      =IF(FRAPPE_AVG  (…)  op N, "t", "f")
+      =IF(FRAPPE_GET  ("DT", A1, "field") op "val", "t", "f")
+      =IF(A1 op "val", "t", "f")          ← direct column comparison
+      =IF(A1 op "val", "t", "f")  with filter_op "!=" / "contains" / …
+
+    Also handles filter_op other than "=" by inverting the want_true logic.
+
+    Returns the computed value (int/float) or None (caller falls back to row-fetch).
+    """
+    import re
+
+    expr = formula.strip().lstrip("=").strip()
+
+    # ── Require IF(condition, true_val, false_val) ────────────────────────
+    parsed = _parse_if_expr(expr)
+    if not parsed:
+        return None
+    cond_str, true_val, false_val = parsed
+
+    # Determine which branch the card filter selects
+    filter_val_s = str(filter_val).strip()
+    true_val_s   = str(true_val).strip()
+    false_val_s  = str(false_val).strip()
+
+    if filter_op == "=":
+        if   filter_val_s == true_val_s:  want_true = True
+        elif filter_val_s == false_val_s: want_true = False
+        else: return None
+    elif filter_op == "!=":
+        if   filter_val_s == true_val_s:  want_true = False
+        elif filter_val_s == false_val_s: want_true = True
+        else: return None
+    else:
+        # contains / numeric ops on formula strings — can't push to SQL
+        return None
+
+    # Collect plain (non-formula) extra card filters
+    plain_extra = [
+        [ef["col"], ef.get("op", "="), ef.get("val", "")]
+        for ef in extra_filters
+        if (ef.get("col") or "").strip() and not ef["col"].startswith("_")
+    ]
+
+    # ── Dispatch by condition type ────────────────────────────────────────
+    return _sql_dispatch_condition(
+        cond_str, want_true,
+        doctype, col_fields, aggregate, agg_field,
+        lst_filters, plain_extra,
+    )
+
+
+def _sql_dispatch_condition(cond_str, want_true, doctype, col_fields,
+                             aggregate, agg_field, lst_filters, plain_extra):
+    """Route a parsed IF-condition to the right SQL handler."""
+    import re
+
+    # ── FRAPPE_COUNT / FRAPPE_SUM / FRAPPE_AVG (...) op N ─────────────────
+    m_agg = re.match(
+        r'^(FRAPPE_COUNT|FRAPPE_SUM|FRAPPE_AVG)\s*\((.+)\)\s*([><=!]+|<>)\s*(.+)$',
+        cond_str, re.I | re.S,
+    )
+    if m_agg:
+        func    = m_agg.group(1).upper()
+        args    = _parse_formula_args(m_agg.group(2))
+        comp_op = m_agg.group(3).replace("<>", "!=")
+        try:
+            threshold = float(m_agg.group(4).strip().strip('"'))
+        except (ValueError, TypeError):
+            return None
+        return _sql_frappe_numeric_func(
+            func, args, comp_op, threshold, want_true,
+            doctype, col_fields, aggregate, agg_field, lst_filters, plain_extra,
+        )
+
+    # ── FRAPPE_GET("DT", A1, "field") op "val" ────────────────────────────
+    m_get = re.match(
+        r'^FRAPPE_GET\s*\((.+)\)\s*([><=!]+|<>)\s*(.+)$',
+        cond_str, re.I | re.S,
+    )
+    if m_get:
+        args    = _parse_formula_args(m_get.group(1))
+        comp_op = m_get.group(2).replace("<>", "!=")
+        val     = _strip_formula_quotes(m_get.group(3).strip())
+        return _sql_frappe_get(
+            args, comp_op, val, want_true,
+            doctype, col_fields, aggregate, agg_field, lst_filters, plain_extra,
+        )
+
+    # ── A1 op "val" — direct column comparison ────────────────────────────
+    m_col = re.match(r'^([A-Z]+)1\s*([><=!]+|<>)\s*(.+)$', cond_str, re.I)
+    if m_col:
+        idx       = _col_letter_to_index(m_col.group(1).upper())
+        row_field = col_fields[idx] if idx < len(col_fields) else "name"
+        comp_op   = m_col.group(2).replace("<>", "!=")
+        val       = _strip_formula_quotes(m_col.group(3).strip())
+        neg_op    = {"=":"!=","!=":"=",">":"<=","<":">=",">=":"<","<=":">"}
+        op        = comp_op if want_true else neg_op.get(comp_op, "!=")
+        try:
+            return _count_or_agg(
+                doctype,
+                lst_filters + plain_extra + [[row_field, op, val]],
+                aggregate, agg_field,
+            )
+        except Exception:
+            return None
+
+    return None
+
+
+def _sql_frappe_numeric_func(func, args, comp_op, threshold, want_true,
+                              doctype, col_fields, aggregate, agg_field,
+                              lst_filters, plain_extra):
+    """
+    Handle IF(FRAPPE_COUNT/SUM/AVG(…) op N, t, f).
+    Builds a GROUP BY query on the link DocType, resolves passing keys,
+    then counts/aggregates on the base DocType with IN / NOT IN.
+    """
+    if not args:
+        return None
+
+    link_doctype = _strip_formula_quotes(args[0])
+    if not link_doctype:
+        return None
+
+    sum_field, arg_start = None, 1
+    if func in ("FRAPPE_SUM", "FRAPPE_AVG"):
+        if len(args) < 2:
+            return None
+        sum_field = _strip_formula_quotes(args[1])
+        arg_start = 2
+
+    # Parse fk/fv pairs — exactly one must be a dynamic cell reference (A1)
+    static_link_filters: list = []
+    dynamic_pair = None
+
+    i = arg_start
+    while i + 1 < len(args):
+        fk     = _strip_formula_quotes(args[i])
+        fv_raw = args[i + 1].strip()
+
+        col_ref = _try_col_ref(fv_raw)
+        if col_ref is not None:
+            if dynamic_pair is not None:
+                return None  # multiple dynamic cols — can't vectorise
+            rf = col_fields[col_ref] if col_ref < len(col_fields) else "name"
+            dynamic_pair = (fk, rf)
+        else:
+            # Operator may be embedded in fk: "transaction_date >="
+            import re
+            fk_m = re.match(r'^(.+?)\s+(>=|<=|!=|<>|>|<|=|like)\s*$', fk, re.I)
+            if fk_m:
+                static_link_filters.append(
+                    [fk_m.group(1).strip(), fk_m.group(2).strip(), _strip_formula_quotes(fv_raw)]
+                )
+            else:
+                static_link_filters.append([fk, "=", _strip_formula_quotes(fv_raw)])
+        i += 2
+
+    if dynamic_pair is None:
+        return None
+
+    link_field, row_field = dynamic_pair
+
+    # ── Query 1: GROUP BY → per-key numeric value ─────────────────────────
+    try:
+        if func == "FRAPPE_COUNT":
+            rows = frappe.db.get_all(
+                link_doctype,
+                fields=[link_field, "count(*) as _v"],
+                filters=static_link_filters,
+                group_by=link_field,
+            )
+            val_map = {str(r.get(link_field, "")): (r.get("_v") or 0) for r in rows}
+
+        elif func == "FRAPPE_SUM" and sum_field:
+            rows = frappe.db.get_all(
+                link_doctype,
+                fields=[link_field, f"sum({sum_field}) as _v"],
+                filters=static_link_filters,
+                group_by=link_field,
+            )
+            val_map = {str(r.get(link_field, "")): float(r.get("_v") or 0) for r in rows}
+
+        elif func == "FRAPPE_AVG" and sum_field:
+            rows = frappe.db.get_all(
+                link_doctype,
+                fields=[link_field, f"sum({sum_field}) as _s", "count(*) as _c"],
+                filters=static_link_filters,
+                group_by=link_field,
+            )
+            val_map = {
+                str(r.get(link_field, "")): float(r.get("_s") or 0) / max(int(r.get("_c") or 1), 1)
+                for r in rows
+            }
+        else:
+            return None
+    except Exception:
+        return None
+
+    # ── Classify keys: passing / failing / absent ─────────────────────────
+    passing_keys = {k for k, v in val_map.items() if _num_compare(v, comp_op, threshold)}
+    failing_keys = {k for k in val_map if k not in passing_keys}
+    zero_passes  = _num_compare(0, comp_op, threshold)
+
+    return _sql_apply_in_not_in(
+        doctype, row_field, passing_keys, failing_keys, zero_passes,
+        want_true, lst_filters, plain_extra, aggregate, agg_field,
+    )
+
+
+def _sql_frappe_get(args, comp_op, val, want_true,
+                    doctype, col_fields, aggregate, agg_field,
+                    lst_filters, plain_extra):
+    """
+    Handle IF(FRAPPE_GET("link_dt", A1, "field") op "val", t, f).
+    Fetches matching names from link_dt, then IN/NOT IN on base doctype.
+    """
+    if len(args) < 3:
+        return None
+
+    link_doctype  = _strip_formula_quotes(args[0])
+    fv_raw        = args[1].strip()
+    target_field  = _strip_formula_quotes(args[2])
+
+    col_ref = _try_col_ref(fv_raw)
+    if col_ref is None:
+        return None
+    row_field = col_fields[col_ref] if col_ref < len(col_fields) else "name"
+
+    # Query 1: find link_dt records where target_field op val
+    try:
+        matching = frappe.get_all(
+            link_doctype,
+            fields=["name"],
+            filters=[[target_field, comp_op, val]],
+            limit=0,
+        )
+        matching_names = {str(r["name"]) for r in matching}
+    except Exception:
+        return None
+
+    passing_keys = matching_names
+    failing_keys: set = set()  # we only know names of matching; non-matching = absence
+    zero_passes  = not want_true  # rows absent from link_dt → comp_op might not apply
+
+    # For FRAPPE_GET: absent rows have no value → treat as "no match" (False branch)
+    # zero_passes = False (absent = no match)
+    return _sql_apply_in_not_in(
+        doctype, row_field, passing_keys, failing_keys, False,
+        want_true, lst_filters, plain_extra, aggregate, agg_field,
+    )
+
+
+def _sql_apply_in_not_in(doctype, row_field, passing_keys, failing_keys, zero_passes,
+                          want_true, lst_filters, plain_extra, aggregate, agg_field):
+    """
+    Build final base-DocType filters from passing/failing key sets and run aggregate.
+
+    zero_passes = True  means rows ABSENT from the link table also satisfy the condition.
+    want_true   = True  means we want rows where condition is True.
+    """
+    base = lst_filters + plain_extra
+
+    try:
+        if want_true:
+            if zero_passes:
+                # True = passing_keys ∪ (all rows not in val_map)
+                # Equivalent: exclude failing_keys
+                if failing_keys:
+                    return _count_or_agg(doctype, base + [[row_field, "not in", list(failing_keys)]], aggregate, agg_field)
+                else:
+                    return _count_or_agg(doctype, base, aggregate, agg_field)
+            else:
+                # True = only passing_keys
+                if not passing_keys:
+                    return 0
+                return _count_or_agg(doctype, base + [[row_field, "in", list(passing_keys)]], aggregate, agg_field)
+        else:
+            if zero_passes:
+                # False = rows in val_map that don't pass = failing_keys
+                if not failing_keys:
+                    return 0
+                return _count_or_agg(doctype, base + [[row_field, "in", list(failing_keys)]], aggregate, agg_field)
+            else:
+                # False = failing_keys ∪ (rows absent from val_map)
+                # = total − passing_keys
+                total = frappe.db.count(doctype, filters=base)
+                if not passing_keys:
+                    return total
+                passing_count = frappe.db.count(doctype, filters=base + [[row_field, "in", list(passing_keys)]])
+                return total - passing_count
+    except Exception:
+        return None
+
+
+def _count_or_agg(doctype, filters, aggregate, agg_field):
+    """Run COUNT or numeric aggregate on doctype with given filters."""
+    if aggregate == "count" or not agg_field:
+        return frappe.db.count(doctype, filters=filters)
+    matched = frappe.get_all(doctype, fields=[agg_field], filters=filters, limit=0)
+    nums = [float(r.get(agg_field) or 0) for r in matched if r.get(agg_field) is not None]
+    if not nums:
+        return 0
+    if aggregate == "sum": return round(sum(nums), 2)
+    if aggregate == "avg": return round(sum(nums) / len(nums), 2)
+    if aggregate == "min": return round(min(nums), 2)
+    if aggregate == "max": return round(max(nums), 2)
+    return len(nums)
+
+
+# ── compute_card_aggregate helpers ────────────────────────────────────────────
+
+
+def _col_letter_to_index(letters: str) -> int:
+    """'A' → 0, 'B' → 1, 'Z' → 25, 'AA' → 26"""
+    result = 0
+    for c in letters.upper():
+        result = result * 26 + (ord(c) - ord("A") + 1)
+    return result - 1
+
+
+def _card_match(cell: str, op: str, val: str) -> bool:
+    cell, val = cell.strip(), val.strip()
+    if op == "=":        return cell == val
+    if op == "!=":       return cell != val
+    if op == "contains": return val.lower() in cell.lower()
+    try:
+        c, v = float(cell), float(val)
+        if op == ">":  return c > v
+        if op == "<":  return c < v
+        if op == ">=": return c >= v
+        if op == "<=": return c <= v
+    except (ValueError, TypeError):
+        pass
+    return False
+
+
+def _eval_formula_bulk(formula: str, rows: list, col_fields: list) -> None:
+    """
+    Evaluate a HyperFormula formula template for every row.
+    Sets row["_val"] in-place.
+
+    Supports nested IFs of arbitrary depth, FRAPPE_FUNC comparisons on
+    both sides of a condition, and bare FRAPPE_FUNC / column references.
+    """
+    import re
+
+    expr = formula.strip()
+    if expr.startswith("="):
+        expr = expr[1:].strip()
+
+    # ── IF(condition, true_val, false_val) — handles nested IFs recursively
+    parsed_if = _parse_if_expr(expr)
+    if parsed_if:
+        cond_str, true_val_str, false_val_str = parsed_if
+        conds = _eval_condition_bulk(cond_str, rows, col_fields)
+        true_rows  = [row for row, c in zip(rows, conds) if c]
+        false_rows = [row for row, c in zip(rows, conds) if not c]
+        if true_rows:
+            _eval_branch_value(true_val_str, true_rows, col_fields)
+        if false_rows:
+            _eval_branch_value(false_val_str, false_rows, col_fields)
+        return
+
+    # ── Bare FRAPPE_* returning a number ─────────────────────────────────
+    m = re.match(r'^(FRAPPE_COUNT|FRAPPE_SUM|FRAPPE_AVG|FRAPPE_GET)\s*\((.+)\)$', expr, re.I | re.S)
+    if m:
+        func, args_str = m.group(1).upper(), m.group(2)
+        nums = _frappe_func_bulk(func, _parse_formula_args(args_str), rows, col_fields)
+        for row, v in zip(rows, nums):
+            row["_val"] = v
+        return
+
+    # ── Bare column reference A1 ─────────────────────────────────────────
+    col_m = re.match(r'^([A-Z]+)1$', expr, re.I)
+    if col_m:
+        idx = _col_letter_to_index(col_m.group(1).upper())
+        field = col_fields[idx] if idx < len(col_fields) else "name"
+        for row in rows:
+            row["_val"] = str(row.get(field, "") or "")
+        return
+
+    # ── Fallback ─────────────────────────────────────────────────────────
+    for row in rows:
+        row["_val"] = ""
+
+
+def _eval_branch_value(val_str: str, rows: list, col_fields: list) -> None:
+    """
+    Evaluate one branch of an IF expression (may be a literal, nested IF,
+    or FRAPPE_FUNC call) and set row["_val"] for each row in the subset.
+    """
+    import re
+
+    val_str = val_str.strip()
+
+    # Nested IF — recurse
+    if re.match(r'^IF\s*\(', val_str, re.I):
+        _eval_formula_bulk("=" + val_str, rows, col_fields)
+        return
+
+    # FRAPPE_FUNC returning a value
+    fm = re.match(r'^(FRAPPE_COUNT|FRAPPE_SUM|FRAPPE_AVG|FRAPPE_GET)\s*\((.+)\)$', val_str, re.I | re.S)
+    if fm:
+        func = fm.group(1).upper()
+        args = _parse_formula_args(fm.group(2))
+        nums = _frappe_func_bulk(func, args, rows, col_fields)
+        for row, v in zip(rows, nums):
+            row["_val"] = v
+        return
+
+    # Literal string / number
+    literal = _strip_formula_quotes(val_str)
+    for row in rows:
+        row["_val"] = literal
+
+
+def _parse_if_expr(expr: str):
+    """
+    Parse ``IF(cond, true, false)`` → (cond_str, true_val, false_val) or None.
+    """
+    import re
+    if not re.match(r'^IF\s*\(', expr, re.I):
+        return None
+    # Strip leading "IF("
+    inner = re.sub(r'^IF\s*\(\s*', "", expr, flags=re.I)
+    # Remove trailing ")"
+    if inner.endswith(")"):
+        inner = inner[:-1]
+    parts = _parse_formula_args(inner)
+    if len(parts) < 3:
+        return None
+    return (
+        parts[0].strip(),
+        _strip_formula_quotes(parts[1].strip()),
+        _strip_formula_quotes(parts[2].strip()),
+    )
+
+
+def _eval_condition_bulk(cond_str: str, rows: list, col_fields: list) -> list:
+    """Evaluate a condition string for all rows, returning list[bool]."""
+    import re
+
+    # FRAPPE_FUNC(...) op threshold
+    fm = re.match(
+        r'^(FRAPPE_COUNT|FRAPPE_SUM|FRAPPE_AVG|FRAPPE_GET)\s*\((.+)\)\s*([><=!]+|<>)\s*(.+)$',
+        cond_str, re.I | re.S,
+    )
+    if fm:
+        func = fm.group(1).upper()
+        args = _parse_formula_args(fm.group(2))
+        op   = fm.group(3).replace("<>", "!=")
+        rhs  = fm.group(4).strip()
+        lhs_nums = _frappe_func_bulk(func, args, rows, col_fields)
+
+        # RHS may be another FRAPPE_FUNC (e.g. FRAPPE_SUM(...) >= FRAPPE_SUM(...))
+        rhs_fm = re.match(
+            r'^(FRAPPE_COUNT|FRAPPE_SUM|FRAPPE_AVG|FRAPPE_GET)\s*\((.+)\)$',
+            rhs, re.I | re.S,
+        )
+        if rhs_fm:
+            rhs_func = rhs_fm.group(1).upper()
+            rhs_args = _parse_formula_args(rhs_fm.group(2))
+            rhs_nums = _frappe_func_bulk(rhs_func, rhs_args, rows, col_fields)
+            return [_num_compare(l, op, r) for l, r in zip(lhs_nums, rhs_nums)]
+
+        try:
+            threshold = float(rhs.strip('"'))
+        except (ValueError, TypeError):
+            threshold = 0.0
+        return [_num_compare(v, op, threshold) for v in lhs_nums]
+
+    # Column reference op literal  (A1 = "value")
+    cm = re.match(r'^([A-Z]+)1\s*([><=!]+|<>)\s*(.+)$', cond_str, re.I)
+    if cm:
+        idx = _col_letter_to_index(cm.group(1).upper())
+        field = col_fields[idx] if idx < len(col_fields) else "name"
+        op  = cm.group(2).replace("<>", "!=")
+        val = _strip_formula_quotes(cm.group(3).strip())
+        return [_card_match(str(r.get(field, "") or ""), op, val) for r in rows]
+
+    return [True] * len(rows)
+
+
+def _frappe_func_bulk(func: str, args: list, rows: list, col_fields: list) -> list:
+    """
+    Evaluate FRAPPE_COUNT / FRAPPE_SUM / FRAPPE_AVG for all rows at once
+    using a single GROUP BY query when possible.
+    """
+    import re
+
+    if not args:
+        return [0] * len(rows)
+
+    link_doctype = _strip_formula_quotes(args[0])
+    if not link_doctype:
+        return [0] * len(rows)
+
+    # FRAPPE_SUM / FRAPPE_AVG: 2nd arg is the sum field
+    sum_field = None
+    arg_start = 1
+    if func in ("FRAPPE_SUM", "FRAPPE_AVG"):
+        if len(args) < 2:
+            return [0] * len(rows)
+        sum_field = _strip_formula_quotes(args[1])
+        arg_start = 2
+
+    # Parse fk/fv pairs — fv may be a column ref (A1) or a string literal
+    static_filters: list = []
+    dynamic_pairs: list  = []  # (link_field, row_fieldname)
+
+    i = arg_start
+    while i + 1 < len(args):
+        fk = _strip_formula_quotes(args[i])
+        fv_raw = args[i + 1].strip()
+
+        # Handle operator-embedded fieldnames: "transaction_date >=" → field="transaction_date", op=">="
+        fk_op = "="
+        fk_m = re.match(r'^(.+?)\s+(>=|<=|!=|<>|>|<|=|like)\s*$', fk, re.I)
+        if fk_m:
+            fk, fk_op = fk_m.group(1).strip(), fk_m.group(2).strip()
+
+        col_ref = _try_col_ref(fv_raw)
+        if col_ref is not None:
+            rf = col_fields[col_ref] if col_ref < len(col_fields) else "name"
+            dynamic_pairs.append((fk, rf))
+        else:
+            static_filters.append([fk, fk_op, _strip_formula_quotes(fv_raw)])
+        i += 2
+
+    # All-static: same value for every row
+    if not dynamic_pairs:
+        try:
+            cnt = frappe.db.count(link_doctype, filters=static_filters) or 0
+        except Exception:
+            cnt = 0
+        return [cnt] * len(rows)
+
+    # Single dynamic field: one GROUP BY query covers all rows
+    if len(dynamic_pairs) == 1:
+        dyn_fk, dyn_rf = dynamic_pairs[0]
+        row_vals = [r.get(dyn_rf) for r in rows]
+        unique = list({v for v in row_vals if v is not None})
+        if not unique:
+            return [0] * len(rows)
+
+        bulk_filters = static_filters + [[dyn_fk, "in", unique]]
+        val_map: dict = {}
+        try:
+            if func == "FRAPPE_COUNT":
+                agg_rows = frappe.db.get_all(
+                    link_doctype,
+                    fields=[dyn_fk, "count(*) as cnt"],
+                    filters=bulk_filters,
+                    group_by=dyn_fk,
+                )
+                val_map = {str(r.get(dyn_fk, "")): (r.get("cnt") or 0) for r in agg_rows}
+            elif func == "FRAPPE_SUM" and sum_field:
+                agg_rows = frappe.db.get_all(
+                    link_doctype,
+                    fields=[dyn_fk, f"sum({sum_field}) as s"],
+                    filters=bulk_filters,
+                    group_by=dyn_fk,
+                )
+                val_map = {str(r.get(dyn_fk, "")): float(r.get("s") or 0) for r in agg_rows}
+            elif func == "FRAPPE_AVG" and sum_field:
+                agg_rows = frappe.db.get_all(
+                    link_doctype,
+                    fields=[dyn_fk, f"sum({sum_field}) as s", "count(*) as cnt"],
+                    filters=bulk_filters,
+                    group_by=dyn_fk,
+                )
+                val_map = {
+                    str(r.get(dyn_fk, "")): (
+                        float(r.get("s") or 0) / max(int(r.get("cnt") or 1), 1)
+                    )
+                    for r in agg_rows
+                }
+        except Exception:
+            pass
+
+        return [val_map.get(str(rv), 0) for rv in row_vals]
+
+    # Multiple dynamic fields: row-by-row (rare)
+    results = []
+    for row in rows:
+        dyn_f = [[fk, "=", row.get(rf)] for fk, rf in dynamic_pairs]
+        all_f = static_filters + dyn_f
+        try:
+            if func == "FRAPPE_COUNT":
+                v: float = float(frappe.db.count(link_doctype, filters=all_f) or 0)
+            elif func in ("FRAPPE_SUM", "FRAPPE_AVG") and sum_field:
+                r_rows = frappe.db.get_all(link_doctype, fields=[sum_field], filters=all_f)
+                nums = [float(x[sum_field] or 0) for x in r_rows if x.get(sum_field) is not None]
+                v = sum(nums) if func == "FRAPPE_SUM" else (sum(nums) / len(nums) if nums else 0.0)
+            else:
+                v = 0.0
+        except Exception:
+            v = 0.0
+        results.append(v)
+    return results
+
+
+def _parse_formula_args(args_str: str) -> list:
+    """Split formula args on commas, respecting quoted strings and nested parens."""
+    parts, current, depth, in_q = [], [], 0, False
+    for ch in args_str:
+        if ch == '"' and depth == 0:
+            in_q = not in_q
+            current.append(ch)
+        elif not in_q:
+            if ch == "(":
+                depth += 1; current.append(ch)
+            elif ch == ")":
+                depth -= 1; current.append(ch)
+            elif ch == "," and depth == 0:
+                parts.append("".join(current))
+                current = []
+            else:
+                current.append(ch)
+        else:
+            current.append(ch)
+    if current:
+        parts.append("".join(current))
+    return parts
+
+
+def _strip_formula_quotes(s: str) -> str:
+    s = s.strip()
+    if len(s) >= 2 and s[0] == '"' and s[-1] == '"':
+        return s[1:-1]
+    return s
+
+
+def _try_col_ref(s: str):
+    """Return column index if s matches A1, B1, AA1 etc., else None."""
+    import re
+    m = re.match(r'^([A-Z]+)1$', s.strip(), re.I)
+    return _col_letter_to_index(m.group(1).upper()) if m else None
+
+
+def _num_compare(val, op: str, threshold: float) -> bool:
+    try:
+        v = float(val)
+        if op == ">":  return v > threshold
+        if op == "<":  return v < threshold
+        if op == ">=": return v >= threshold
+        if op == "<=": return v <= threshold
+        if op == "=":  return v == threshold
+        if op == "!=": return v != threshold
+    except (TypeError, ValueError):
+        pass
+    return False
 
 
 @frappe.whitelist()
@@ -4327,3 +5675,289 @@ def remove_doc_tag(doctype, docname, tag):
 	frappe.has_permission(doctype, "write", throw=True)
 	from frappe.desk.doctype.tag.tag import remove_tag
 	return remove_tag(tag, doctype, docname)
+
+
+def _get_active_formula_configs():
+	"""Return the list of active non-system Excel Formula configs (with preset filters).
+	Shared by extend_bootinfo and the realtime broadcast."""
+	if not frappe.db.table_exists("Excel Formula"):
+		return []
+	configs = frappe.get_all(
+		"Excel Formula",
+		filters={"is_active": 1, "is_system": 0},
+		fields=["formula_name", "label", "category", "formula_type",
+				"source_doctype", "target_fieldname", "description"],
+		order_by="formula_name asc",
+	)
+	for cfg in configs:
+		cfg["preset_filters"] = frappe.get_all(
+			"Excel Formula Filter",
+			filters={"parent": cfg["formula_name"]},
+			fields=["filter_key", "filter_value"],
+			order_by="idx asc",
+		)
+	return configs
+
+
+def extend_bootinfo(bootinfo):
+	"""Inject active Excel Formula configs into frappe.boot so the JS plugin
+	can register dynamic HyperFormula functions before HOT initialises."""
+	try:
+		bootinfo.excel_formula_configs = _get_active_formula_configs()
+	except Exception:
+		bootinfo.excel_formula_configs = []
+
+
+@frappe.whitelist()
+def get_formula_configs():
+	"""Return active non-system Excel Formula configs as JSON.
+	Called client-side after a realtime excel_formula_updated event to
+	refresh frappe.boot.excel_formula_configs without a page reload."""
+	return _get_active_formula_configs()
+
+
+def seed_example_formulas():
+	"""Insert ready-to-use example formulas with preset filters.
+	Run once after migrate: bench --site index.com execute excel_view.api.seed_example_formulas
+	"""
+	examples = [
+		{
+			"formula_name": "REVENUE_MTD",
+			"label": "Revenue Month-to-Date",
+			"category": "Financial",
+			"formula_type": "sum",
+			"source_doctype": "Sales Invoice",
+			"target_fieldname": "grand_total",
+			"description": "Total submitted Sales Invoice revenue for the current period.\n=REVENUE_MTD()",
+			"is_system": 0,
+			"filters": [
+				{"filter_key": "docstatus", "filter_value": "1"},
+				{"filter_key": "posting_date >=", "filter_value": "PERIOD_START()"},
+				{"filter_key": "posting_date <=", "filter_value": "PERIOD_END()"},
+			],
+		},
+		{
+			"formula_name": "RECEIVABLES",
+			"label": "Total Receivables",
+			"category": "Financial",
+			"formula_type": "sum",
+			"source_doctype": "Sales Invoice",
+			"target_fieldname": "outstanding_amount",
+			"description": "Sum of all unpaid Sales Invoice outstanding amounts.\n=RECEIVABLES()",
+			"is_system": 0,
+			"filters": [
+				{"filter_key": "docstatus", "filter_value": "1"},
+				{"filter_key": "outstanding_amount >", "filter_value": "0"},
+			],
+		},
+		{
+			"formula_name": "PAYABLES",
+			"label": "Total Payables",
+			"category": "Financial",
+			"formula_type": "sum",
+			"source_doctype": "Purchase Invoice",
+			"target_fieldname": "outstanding_amount",
+			"description": "Sum of all unpaid Purchase Invoice outstanding amounts.\n=PAYABLES()",
+			"is_system": 0,
+			"filters": [
+				{"filter_key": "docstatus", "filter_value": "1"},
+				{"filter_key": "outstanding_amount >", "filter_value": "0"},
+			],
+		},
+		{
+			"formula_name": "HEADCOUNT",
+			"label": "Active Employee Count",
+			"category": "HR",
+			"formula_type": "count",
+			"source_doctype": "Employee",
+			"target_fieldname": "name",
+			"description": "Count of currently active employees.\n=HEADCOUNT()",
+			"is_system": 0,
+			"filters": [{"filter_key": "status", "filter_value": "Active"}],
+		},
+		{
+			"formula_name": "OPEN_ORDERS",
+			"label": "Open Sales Orders Value",
+			"category": "Sales",
+			"formula_type": "sum",
+			"source_doctype": "Sales Order",
+			"target_fieldname": "grand_total",
+			"description": "Total value of open (not fully billed) Sales Orders.\n=OPEN_ORDERS()",
+			"is_system": 0,
+			"filters": [
+				{"filter_key": "docstatus", "filter_value": "1"},
+				{"filter_key": "status", "filter_value": "To Bill"},
+			],
+		},
+		{
+			"formula_name": "OVERDUE_COUNT",
+			"label": "Overdue Invoice Count",
+			"category": "Financial",
+			"formula_type": "count",
+			"source_doctype": "Sales Invoice",
+			"target_fieldname": "name",
+			"description": "Count of submitted invoices with outstanding amount past due date.\n=OVERDUE_COUNT()",
+			"is_system": 0,
+			"filters": [
+				{"filter_key": "docstatus", "filter_value": "1"},
+				{"filter_key": "outstanding_amount >", "filter_value": "0"},
+				{"filter_key": "due_date <", "filter_value": "TODAY()"},
+			],
+		},
+		{
+			"formula_name": "AVG_INVOICE_VALUE",
+			"label": "Average Invoice Value",
+			"category": "Sales",
+			"formula_type": "avg",
+			"source_doctype": "Sales Invoice",
+			"target_fieldname": "grand_total",
+			"description": "Average Sales Invoice value for the current period.\n=AVG_INVOICE_VALUE()",
+			"is_system": 0,
+			"filters": [
+				{"filter_key": "docstatus", "filter_value": "1"},
+				{"filter_key": "posting_date >=", "filter_value": "PERIOD_START()"},
+				{"filter_key": "posting_date <=", "filter_value": "PERIOD_END()"},
+			],
+		},
+	]
+
+	inserted = 0
+	for ex in examples:
+		if frappe.db.exists("Excel Formula", ex["formula_name"]):
+			continue
+		doc = frappe.new_doc("Excel Formula")
+		doc.update({k: v for k, v in ex.items() if k != "filters"})
+		doc.is_active = 1
+		for f in ex.get("filters", []):
+			doc.append("filters", f)
+		doc.insert(ignore_permissions=True)
+		inserted += 1
+
+	frappe.db.commit()
+	print(f"Seeded {inserted} example Excel Formula records.")
+
+
+# ── V3 IntelliFlow: DuckDB bulk fetch + schema endpoints ──────────────────────
+
+@frappe.whitelist()
+def bulk_fetch_for_duckdb(doctype, filters="[]", limit=50000):
+	"""
+	Bulk-fetch all records of a DocType for client-side DuckDB ingestion.
+	Returns {rows: [...], schema: [...]} — permission-checked.
+
+	Filters: JSON-encoded list of [fieldname, operator, value] triples.
+	Limit: max rows to fetch (default 50000 — enough for analytical queries).
+	"""
+	frappe.has_permission(doctype, throw=True)
+	limit = min(int(limit or 50000), 100000)
+
+	# Parse filters
+	parsed_filters = []
+	if filters:
+		try:
+			raw = frappe.parse_json(filters)
+			if isinstance(raw, list):
+				parsed_filters = raw
+		except Exception:
+			pass
+
+	meta = frappe.get_meta(doctype)
+	# Fetch all non-virtual, non-structural fields (+ name, creation, modified)
+	SKIP_TYPES = {"Column Break", "Section Break", "Tab Break", "Fold",
+	              "Heading", "HTML", "Custom HTML", "Table", "Table MultiSelect", "Password"}
+	fields = ["name", "creation", "modified", "owner"]
+	for df in meta.fields:
+		if df.fieldtype in SKIP_TYPES:
+			continue
+		if df.is_virtual:
+			continue
+		fields.append(df.fieldname)
+
+	# Deduplicate while preserving order
+	seen = set()
+	unique_fields = []
+	for f in fields:
+		if f not in seen:
+			seen.add(f)
+			unique_fields.append(f)
+
+	rows = frappe.get_all(
+		doctype,
+		fields=unique_fields,
+		filters=parsed_filters,
+		limit=limit,
+		ignore_permissions=False,
+	)
+
+	# Convert to plain dicts (frappe._dict → dict)
+	rows = [dict(r) for r in rows]
+
+	return {
+		"doctype": doctype,
+		"rows": rows,
+		"count": len(rows),
+		"fields": unique_fields,
+	}
+
+
+@frappe.whitelist()
+def get_doctype_schema(doctypes):
+	"""
+	Return field metadata for one or more DocTypes — used by QueryFlowPanel
+	to render field checklists and EER badges without round-trips.
+
+	Input:  doctypes — JSON list of DocType names, or a single name string.
+	Output: {doctype_name: {module, fields: [{fieldname, label, fieldtype, options, reqd}]}}
+	"""
+	if isinstance(doctypes, str):
+		try:
+			doctypes = frappe.parse_json(doctypes)
+		except Exception:
+			doctypes = [doctypes]
+
+	if not isinstance(doctypes, list):
+		doctypes = [doctypes]
+
+	SKIP_TYPES = {"Column Break", "Section Break", "Tab Break", "Fold",
+	              "Heading", "HTML", "Custom HTML", "Password"}
+
+	result = {}
+	for doctype in doctypes:
+		if not doctype:
+			continue
+		try:
+			frappe.has_permission(doctype, throw=True)
+		except frappe.PermissionError:
+			continue
+
+		meta = frappe.get_meta(doctype)
+		fields = []
+
+		# Always include name first
+		fields.append({
+			"fieldname": "name",
+			"label":     "Name (ID)",
+			"fieldtype": "Data",
+			"options":   "",
+			"reqd":      1,
+		})
+
+		for df in meta.fields:
+			if df.fieldtype in SKIP_TYPES:
+				continue
+			if df.is_virtual:
+				continue
+			fields.append({
+				"fieldname": df.fieldname,
+				"label":     df.label or df.fieldname,
+				"fieldtype": df.fieldtype,
+				"options":   df.options or "",
+				"reqd":      int(bool(df.reqd)),
+			})
+
+		result[doctype] = {
+			"module": meta.module or "",
+			"fields": fields,
+		}
+
+	return result

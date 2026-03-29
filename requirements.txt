@@ -1,12 +1,26 @@
+# ── V2 IntelliFlow / GenBI — AI Join Discovery + Pattern Mining ────────────────
+# networkx: graph traversal for schema path-finding and join discovery
 networkx>=3.0
+# mlxtend: association rule mining (frequent itemsets) for Pattern Mining
 mlxtend>=0.23
+# scikit-learn: TF-IDF vectorizer for semantic column name similarity
 scikit-learn>=1.3
 scipy>=1.11
 numpy>=1.24
 pandas>=2.0
+# RapidFuzz: fast fuzzy string matching for column name matching (Layer 2 of Smart Lookup)
 RapidFuzz>=3.0
+# spaCy: NER for PROMPT() formula (V3.5 roadmap) — model below auto-installs
 spacy>=3.7
 # spaCy English model - auto-installs without manual download
 https://github.com/explosion/spacy-models/releases/download/en_core_web_sm-3.7.1/en_core_web_sm-3.7.1-py3-none-any.whl
+# sentence-transformers: semantic embedding for advanced GenBI join suggestions
 sentence-transformers>=2.2
+# pdfplumber: PDF export parsing (V2.5+)
 pdfplumber>=0.10
+
+# ── V3 IntelliFlow — No new Python packages ────────────────────────────────────
+# V3 IntelliFlow (QueryFlowPanel, SQLGenerator, DuckDB engine V2) is entirely
+# client-side JavaScript. New server endpoints (bulk_fetch_for_duckdb,
+# get_doctype_schema) use only core Frappe ORM — no extra Python dependencies.
+# Client-side packages (dagre, sql-formatter, comlink) are in package.json.
