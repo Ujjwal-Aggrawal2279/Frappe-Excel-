@@ -40,6 +40,24 @@ frappe.views.excel.ExportManager = class ExportManager {
 	// ── Export ────────────────────────────────────────────────────────────────
 
 	/**
+	 * Returns board.columns reordered to match HOT's current visual column order.
+	 * After manualColumnMove drag-reorder, hot.toPhysicalColumn(visualIdx) maps
+	 * visual position → physical index in board.columns. Without this, exports
+	 * reflect the original load order, not what the user sees on screen.
+	 */
+	_get_export_columns() {
+		const hot = this.board.hot;
+		const cols = this.board.columns;
+		const n = cols.length;
+		const ordered = [];
+		for (let vis = 0; vis < n; vis++) {
+			const phys = hot.toPhysicalColumn(vis);
+			if (phys != null && cols[phys]) ordered.push(cols[phys]);
+		}
+		return ordered.length === n ? ordered : cols;
+	}
+
+	/**
 	 * Export current grid data to .xlsx using ExcelJS.
 	 * Phase 3: full implementation (cell types, widths, formatting).
 	 */
@@ -50,7 +68,7 @@ frappe.views.excel.ExportManager = class ExportManager {
 		workbook.created = new Date();
 
 		const sheet = workbook.addWorksheet(this.board.doctype);
-		const columns = this.board.columns;
+		const columns = this._get_export_columns();
 		const data = this.board.list_view.data;
 
 		// Header row
@@ -91,7 +109,7 @@ frappe.views.excel.ExportManager = class ExportManager {
 	 * Export current grid data to CSV using PapaParse.
 	 */
 	export_csv() {
-		const columns = this.board.columns;
+		const columns = this._get_export_columns();
 		const data = this.board.list_view.data;
 
 		const rows = data.map((row) => columns.map((col) => row[col.data] ?? ""));
