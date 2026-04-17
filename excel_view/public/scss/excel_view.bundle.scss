@@ -1063,6 +1063,24 @@
 		color: #0563c1; // Excel hyperlink blue
 	}
 
+	// ── ID link anchor inside name column ─────────────────────────────────────
+	a.ev-id-link {
+		display: block;
+		width: 100%;
+		color: #0563c1;
+		text-decoration: none;
+		font-family: var(--ev-font-mono);
+		font-size: 11px;
+		white-space: nowrap;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		cursor: pointer;
+		&:hover {
+			text-decoration: underline;
+			color: #003c8f;
+		}
+	}
+
 	// ── Currency / numeric ────────────────────────────────────────────────────
 	td.ev-currency-cell,
 	td.htNumeric {
@@ -2556,6 +2574,11 @@
 	.ev-page .handsontable {
 		td.ev-name-col {
 			color: #4ec9b0;
+		}
+
+		a.ev-id-link {
+			color: #4ec9b0;
+			&:hover { color: #80ffdf; }
 		}
 
 		.ev-link-cell {

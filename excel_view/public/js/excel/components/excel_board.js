@@ -373,6 +373,14 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			const row_idx = parseInt($(e.currentTarget).data("row"), 10);
 			if (!isNaN(row_idx)) this.child_table_manager?.toggle(row_idx);
 		});
+
+		// V3.5 — ID link: open Frappe form view via SPA router
+		this.$hot_container.on("click.ev-id-link", "a.ev-id-link", (e) => {
+			e.preventDefault();
+			e.stopPropagation();
+			const name = $(e.currentTarget).attr("data-name");
+			if (name) frappe.set_route("Form", this.doctype, name);
+		});
 	}
 
 	_init_hot() {
@@ -688,6 +696,17 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		// Join skeleton: shimmer animation while join data is loading
 		if (this.columns[col]?._is_join_loading) {
 			TD.classList.add("ev-cell-join-loading");
+			return;
+		}
+
+		// ID / name column — render as a clickable link that opens the Form view
+		if (this.columns[col]?._is_name_col) {
+			const d = this.list_view?.data?.[row];
+			if (d && !d._is_new && !d._is_ct_spacer && value) {
+				const escaped = frappe.utils.escape_html(String(value));
+				TD.innerHTML = `<a class="ev-id-link" data-name="${escaped}" href="#Form/${frappe.utils.escape_html(this.doctype)}/${escaped}" title="${frappe.utils.escape_html(__("Open {0}", [value]))}">${escaped}</a>`;
+				TD.style.padding = "0 8px";
+			}
 			return;
 		}
 

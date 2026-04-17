@@ -199,7 +199,7 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 				chart_overlays:  JSON.stringify(config.chart_overlays),
 				format_store:    JSON.stringify(config.format_store),
 				cond_fmt_rules:  JSON.stringify(config.cond_fmt_rules),
-				view_state:      JSON.stringify({ freeze_cols: config.freeze_cols, freeze_rows: config.freeze_rows, hide_gridlines: config.hide_gridlines, smart_lookups: config.smart_lookups || null, blank_columns: config.blank_columns?.length ? config.blank_columns : null }),
+				view_state:      JSON.stringify({ freeze_cols: config.freeze_cols, freeze_rows: config.freeze_rows, hide_gridlines: config.hide_gridlines, smart_lookups: config.smart_lookups || null, blank_columns: config.blank_columns?.length ? config.blank_columns : null, child_col_prefs: config.child_col_prefs || null }),
 				is_public:       is_public ? 1 : 0,
 				workbook_name:   workbook_name || null,
 			},
@@ -377,6 +377,8 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 					blank_columns:   _vs.blank_columns  || [],
 					// smart_lookups packed inside view_state (no extra DocType field needed)
 					smart_lookups:   Array.isArray(_vs.smart_lookups) ? _vs.smart_lookups : null,
+					// V3.5 — child table column prefs
+					child_col_prefs: (_vs.child_col_prefs && typeof _vs.child_col_prefs === "object") ? _vs.child_col_prefs : null,
 				};
 
 				this._current = { name: wb.name, title: wb.title };
@@ -519,7 +521,19 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 		const hide_gridlines = this.board.$hot_container?.hasClass("ev-hide-gridlines") || false;
 
 		const smart_lookups = board._applied_lookups?.length ? board._applied_lookups : null;
-		return { columns_config: root_columns_config, formula_columns, blank_columns, filters, sort_by, sheets, chart_overlays, format_store, cond_fmt_rules, freeze_cols, freeze_rows, hide_gridlines, smart_lookups };
+
+		// ── Child table column prefs (V3.5) ────────────────────────────────────
+		// Collect _col_prefs from ChildTableManager: { child_fieldname → [fieldname, ...] }
+		let child_col_prefs = null;
+		const ctm = board.child_table_manager;
+		if (ctm?._col_prefs && Object.keys(ctm._col_prefs).length) {
+			child_col_prefs = {};
+			for (const [fn, set] of Object.entries(ctm._col_prefs)) {
+				child_col_prefs[fn] = Array.from(set);
+			}
+		}
+
+		return { columns_config: root_columns_config, formula_columns, blank_columns, filters, sort_by, sheets, chart_overlays, format_store, cond_fmt_rules, freeze_cols, freeze_rows, hide_gridlines, smart_lookups, child_col_prefs };
 	}
 
 	// ── Restore state from config ─────────────────────────────────────────────
@@ -704,6 +718,30 @@ frappe.views.excel.WorkbookManager = class WorkbookManager {
 			frappe.model.user_settings.save(board.doctype, "excel_smart_lookups", board._applied_lookups);
 			// Re-run joins after sheets + data are loaded (sheets restore at t=50ms)
 			setTimeout(() => board._reapply_smart_lookups?.(), 300);
+		}
+
+		// ── 12. Restore child table column prefs (V3.5) ──────────────────────────────
+		if (config.child_col_prefs && typeof config.child_col_prefs === "object") {
+			const ctm = board.child_table_manager;
+			const prefs = config.child_col_prefs;
+			// Hydrate ChildTableManager in-memory cache
+			if (ctm) {
+				ctm._col_prefs = ctm._col_prefs || {};
+				for (const [fn, fields] of Object.entries(prefs)) {
+					if (Array.isArray(fields) && fields.length) {
+						ctm._col_prefs[fn] = new Set(fields);
+					}
+				}
+			}
+			// Also sync to user_settings so panel reads them on open (in-memory + server)
+			const us = frappe.model.user_settings[board.doctype] || {};
+			for (const [fn, fields] of Object.entries(prefs)) {
+				if (Array.isArray(fields) && fields.length) {
+					us[`ev_ct_cols_${fn}`] = fields;
+				}
+			}
+			frappe.model.user_settings[board.doctype] = us;
+			frappe.model.user_settings.update(board.doctype, us);
 		}
 
 		// ── 10. Restore View tab state (V2.6) ──────────────────────────────────────
