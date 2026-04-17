@@ -1,0 +1,178 @@
+/* Excel View Documentation — Custom Styles */
+
+:root {
+  --ifm-color-primary: #1a73e8;
+  --ifm-color-primary-dark: #1669d3;
+  --ifm-color-primary-darker: #1562c7;
+  --ifm-color-primary-darkest: #1151a3;
+  --ifm-color-primary-light: #2d81ec;
+  --ifm-color-primary-lighter: #3a89ee;
+  --ifm-color-primary-lightest: #5b9ef2;
+  --ifm-code-font-size: 93%;
+  --ifm-font-family-base: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  --docusaurus-highlighted-code-line-bg: rgba(26, 115, 232, 0.08);
+  --ifm-navbar-shadow: 0 1px 3px rgba(0,0,0,0.10);
+  --ifm-toc-border-color: #e8eaed;
+  --ev-badge-bg: #e8f0fe;
+  --ev-badge-color: #1a73e8;
+  --ev-tip-bg: #e6f4ea;
+  --ev-tip-border: #34a853;
+  --ev-warn-bg: #fef7e0;
+  --ev-warn-border: #fbbc04;
+  --ev-shortcut-bg: #f1f3f4;
+  --ev-shortcut-border: #dadce0;
+}
+
+[data-theme='dark'] {
+  --ifm-color-primary: #4da3ff;
+  --ifm-color-primary-dark: #2e91ff;
+  --ifm-color-primary-darker: #1e88ff;
+  --ifm-color-primary-darkest: #006edd;
+  --ifm-color-primary-light: #6cb4ff;
+  --ifm-color-primary-lighter: #7bbcff;
+  --ifm-color-primary-lightest: #a3d2ff;
+  --docusaurus-highlighted-code-line-bg: rgba(77, 163, 255, 0.12);
+  --ev-badge-bg: #1d2d4a;
+  --ev-badge-color: #4da3ff;
+  --ev-tip-bg: #1a2e1f;
+  --ev-tip-border: #34a853;
+  --ev-warn-bg: #2d2510;
+  --ev-warn-border: #fbbc04;
+  --ev-shortcut-bg: #2d2d2d;
+  --ev-shortcut-border: #444;
+}
+
+/* Keyboard shortcut display */
+.ev-shortcut {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.ev-shortcut kbd,
+kbd {
+  display: inline-block;
+  padding: 2px 6px;
+  font-size: 0.78em;
+  font-family: monospace;
+  background: var(--ev-shortcut-bg);
+  border: 1px solid var(--ev-shortcut-border);
+  border-radius: 4px;
+  box-shadow: 0 1px 2px rgba(0,0,0,0.12);
+  vertical-align: middle;
+  line-height: 1.4;
+}
+
+/* Version badge */
+.ev-version-badge {
+  display: inline-block;
+  padding: 2px 8px;
+  font-size: 0.72em;
+  font-weight: 600;
+  background: var(--ev-badge-bg);
+  color: var(--ev-badge-color);
+  border-radius: 10px;
+  vertical-align: middle;
+  margin-left: 6px;
+  letter-spacing: 0.02em;
+}
+
+/* Feature table */
+.ev-feature-table {
+  width: 100%;
+  border-collapse: collapse;
+  margin: 16px 0 24px;
+  font-size: 0.92em;
+}
+
+.ev-feature-table th {
+  background: var(--ifm-color-primary);
+  color: #fff;
+  padding: 8px 12px;
+  text-align: left;
+  font-weight: 600;
+}
+
+.ev-feature-table td {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--ifm-toc-border-color);
+  vertical-align: top;
+}
+
+.ev-feature-table tr:last-child td {
+  border-bottom: none;
+}
+
+/* Shortcut reference table */
+.ev-shortcut-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 0.92em;
+  margin-bottom: 24px;
+}
+
+.ev-shortcut-table th {
+  background: var(--ifm-color-emphasis-200);
+  padding: 8px 12px;
+  text-align: left;
+  font-weight: 600;
+  border-bottom: 2px solid var(--ifm-toc-border-color);
+}
+
+.ev-shortcut-table td {
+  padding: 7px 12px;
+  border-bottom: 1px solid var(--ifm-toc-border-color);
+  vertical-align: middle;
+}
+
+.ev-shortcut-table tr:hover td {
+  background: var(--ifm-color-emphasis-100);
+}
+
+/* Hero banner override */
+.hero--primary {
+  background: linear-gradient(135deg, #1a73e8 0%, #0d47a1 100%);
+}
+
+/* Step callout boxes */
+.ev-step {
+  display: flex;
+  gap: 12px;
+  align-items: flex-start;
+  margin: 12px 0;
+  padding: 12px 16px;
+  background: var(--ifm-color-emphasis-100);
+  border-radius: 8px;
+  border-left: 4px solid var(--ifm-color-primary);
+}
+
+.ev-step-num {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  min-width: 26px;
+  background: var(--ifm-color-primary);
+  color: #fff;
+  border-radius: 50%;
+  font-weight: 700;
+  font-size: 0.85em;
+}
+
+/* Admonition tweak */
+.alert--success {
+  --ifm-alert-background-color: var(--ev-tip-bg);
+  --ifm-alert-border-color: var(--ev-tip-border);
+}
+
+/* Inline code color */
+code {
+  color: var(--ifm-color-primary-darker);
+  background: var(--ifm-color-emphasis-200);
+}
+
+[data-theme='dark'] code {
+  background: rgba(255,255,255,0.07);
+  color: var(--ifm-color-primary-lighter);
+}
