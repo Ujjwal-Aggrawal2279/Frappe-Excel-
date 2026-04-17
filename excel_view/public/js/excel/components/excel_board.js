@@ -967,17 +967,16 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		TD.style.setProperty("background-image", "none", "important");
 	}
 
-	// V3.5 — Text Editor / Long Text cell: open HTML editor modal on double-click.
-	// Called from afterOnCellMouseDown (e.detail === 2) so it works for both
-	// readOnly (Text Editor) and non-readOnly (Long Text) column configs.
+	// V3.5 — Rich text editor modal (EV design system)
+	// Called from afterOnCellMouseDown (e.detail === 2) — fires for readOnly cells too.
 	_maybe_open_html_editor(row, col) {
-		const col_def  = this.columns?.[col];
-		const ft       = col_def?._df?.fieldtype;
+		const col_def = this.columns?.[col];
+		const ft      = col_def?._df?.fieldtype;
 		if (!["Text Editor", "Long Text"].includes(ft)) return;
 
-		// If HOT opened a native editor (Long Text case), cancel it immediately
-		const editor = this.hot?.getActiveEditor?.();
-		if (editor?.isOpened?.()) editor.cancelChanges?.();
+		// Cancel any native HOT editor (Long Text is not readOnly in HOT)
+		const hot_ed = this.hot?.getActiveEditor?.();
+		if (hot_ed?.isOpened?.()) hot_ed.cancelChanges?.();
 
 		const d_src    = this.sheet_manager?.get_current()?.data || this.list_view?.data;
 		const row_data = d_src?.[row];
@@ -987,34 +986,140 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		const label    = col_def._df?.label || fn;
 		const raw_val  = row_data[fn];
 		const html_val = (raw_val != null && raw_val !== "") ? String(raw_val) : "";
-		// can_edit: Text Editor is readOnly in HOT (display only) but IS editable via this modal
-		// if the user has write permission and the field has no read_only flag in the DocType meta.
-		const df_read_only = !!(col_def._df?.read_only);
-		const can_edit = !df_read_only && !!this.list_view.can_write && !row_data._is_ct_spacer;
+		// Text Editor is readOnly in HOT grid (display only) but editable here if user
+		// has write permission and the DocType meta doesn't mark it read_only.
+		const df_ro    = !!(col_def._df?.read_only);
+		const can_edit = !df_ro && !!this.list_view.can_write && !row_data._is_ct_spacer;
 
-		const d = new frappe.ui.Dialog({
-			title: __(label),
-			size: "large",
-			fields: [
-				{
+		// ── Build modal ──────────────────────────────────────────────────────────
+		const escaped_label = frappe.utils.escape_html(__(label));
+		const $overlay = $(`
+			<div class="ev-rte-overlay" role="dialog" aria-modal="true"
+				aria-label="${escaped_label}">
+				<div class="ev-rte-modal">
+					<div class="ev-rte-header">
+						<div class="ev-rte-header-left">
+							<svg class="ev-rte-icon" width="14" height="14" viewBox="0 0 16 16"
+								fill="currentColor" aria-hidden="true">
+								<path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10
+								10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1
+								.11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5
+								12.5 1.207zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1
+								.5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293zm-9.761 5.175-.106.106-1.528
+								3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0
+								1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/>
+							</svg>
+							<span class="ev-rte-title">${escaped_label}</span>
+							<span class="ev-rte-ft-tag">${frappe.utils.escape_html(ft)}</span>
+						</div>
+						<div class="ev-rte-header-right">
+							${can_edit
+								? `<span class="ev-rte-status ev-rte-status--edit">
+									<span class="ev-rte-status-dot"></span>
+									${__("Editing")}
+								   </span>`
+								: `<span class="ev-rte-status ev-rte-status--view">
+									${__("View Only")}
+								   </span>`}
+							<button class="ev-rte-close-btn" aria-label="${__("Close")}">
+								<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+									<path d="M1 1l10 10M11 1L1 11" stroke="currentColor"
+										stroke-width="1.8" stroke-linecap="round"/>
+								</svg>
+							</button>
+						</div>
+					</div>
+					<div class="ev-rte-editor-area"></div>
+					<div class="ev-rte-footer">
+						<span class="ev-rte-shortcut-hint">
+							${can_edit ? `<kbd>Ctrl</kbd><span>+</span><kbd>S</kbd> ${__("to save")}` : ""}
+						</span>
+						<div class="ev-rte-footer-actions">
+							<button class="ev-rte-cancel-btn">${__("Cancel")}</button>
+							${can_edit
+								? `<button class="ev-rte-save-btn">
+									<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+										<path d="M2 1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0
+										1-1V4.5a.5.5 0 0 0-.146-.354l-3-3A.5.5 0 0 0 11.5
+										1H2zm0 1h9.293L14 4.707V14H2V2zm2 2h5a1 1 0 0 1 1 1v1a1
+										1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm0 5h8v1H4v-1zm0
+										2h8v1H4v-1z"/>
+									</svg>
+									${__("Save Changes")}
+								   </button>`
+								: ""}
+						</div>
+					</div>
+				</div>
+			</div>
+		`).appendTo(document.body);
+
+		// ── Inject Frappe editor control ─────────────────────────────────────────
+		const $area   = $overlay.find(".ev-rte-editor-area");
+		let _control  = null;
+
+		try {
+			_control = frappe.ui.form.make_control({
+				df: {
 					fieldtype: ft === "Long Text" ? "Long Text" : "Text Editor",
-					fieldname: "content",
-					label: __(label),
-					default: html_val,
+					fieldname: "ev_rte_content",
+					label: "",
 					read_only: can_edit ? 0 : 1,
 				},
-			],
-			primary_action_label: can_edit ? __("Save") : __("Close"),
-			primary_action: async (values) => {
-				if (!can_edit) { d.hide(); return; }
-				const new_val = values.content ?? "";
-				if (new_val === html_val) { d.hide(); return; }
-				// Push change through the normal save pipeline
-				this.hot?.setDataAtRowProp(row, fn, new_val, "edit");
-				d.hide();
-			},
+				parent:       $area[0],
+				render_input: true,
+			});
+			// Set value after ProseMirror mounts (needs one tick)
+			setTimeout(() => { try { _control.set_value(html_val); } catch (_) {} }, 60);
+		} catch (_e) {
+			// Fallback: raw textarea
+			$area.html(`<textarea class="ev-rte-fallback-ta"
+				${can_edit ? "" : "readonly"}
+				placeholder="${frappe.utils.escape_html(__("No content"))}"
+			>${frappe.utils.escape_html(html_val)}</textarea>`);
+		}
+
+		const _get_value = () => {
+			if (_control) {
+				try { return _control.get_value() ?? ""; } catch (_) {}
+			}
+			return $area.find(".ev-rte-fallback-ta").val() || "";
+		};
+
+		// ── Event handlers ───────────────────────────────────────────────────────
+		const close = () => {
+			$(document).off("keydown.ev-rte");
+			$overlay[0].classList.remove("ev-rte-overlay--in");
+			setTimeout(() => $overlay.remove(), 180);
+		};
+
+		const save = () => {
+			const new_val = _get_value();
+			if (new_val === html_val) { close(); return; }
+			this.hot?.setDataAtRowProp(row, fn, new_val, "edit");
+			if (row_data) row_data[fn] = new_val;
+			this.hot?.render();
+			frappe.views.excel.toast(__("Saved"), "success", 2500);
+			close();
+		};
+
+		$overlay
+			.on("click", ".ev-rte-close-btn, .ev-rte-cancel-btn", close)
+			.on("click", (e) => { if ($(e.target).is(".ev-rte-overlay")) close(); })
+			.on("click", ".ev-rte-save-btn", save);
+
+		$(document).on("keydown.ev-rte", (e) => {
+			if (e.key === "Escape") { close(); return; }
+			if ((e.ctrlKey || e.metaKey) && e.key === "s" && can_edit) {
+				e.preventDefault();
+				save();
+			}
 		});
-		d.show();
+
+		// Animate in (double rAF for CSS transition)
+		requestAnimationFrame(() => requestAnimationFrame(() => {
+			$overlay[0].classList.add("ev-rte-overlay--in");
+		}));
 	}
 
 	// V3.1 — Toggle Focus Cell crosshair
