@@ -497,9 +497,13 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			afterRender: () => this._on_render(),
 			afterRenderer: (TD, row, col, prop, value) => this._apply_cell_format(TD, row, col, value),
 			afterGetColHeader: (col, TH) => this._apply_col_header_format(TH, col),
-			afterOnCellMouseDown: (e, coords) => this._on_tree_row_click(e, coords),
-			// V3.5 — Double-click on HTML/Text Editor/Long Text: open render modal
-			afterBeginEditing: (row, col) => this._maybe_open_html_editor(row, col),
+			afterOnCellMouseDown: (e, coords) => {
+				this._on_tree_row_click(e, coords);
+				// V3.5 — Double-click on Text Editor / Long Text: open HTML editor modal.
+				// Must use mousedown detail (not afterBeginEditing) because readOnly cells
+				// never fire afterBeginEditing.
+				if (e.detail === 2) this._maybe_open_html_editor(coords.row, coords.col);
+			},
 			afterGetRowHeader: (row, TH) => {
 				// V3.1 — Hide row header TR for hidden rows (left clone overlay)
 				if (TH.parentNode) {
@@ -963,16 +967,17 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		TD.style.setProperty("background-image", "none", "important");
 	}
 
-	// V3.5 — HTML/Text Editor cell: intercept afterBeginEditing, close HOT editor,
-	// open a Frappe dialog that renders the HTML content and optionally edits it.
+	// V3.5 — Text Editor / Long Text cell: open HTML editor modal on double-click.
+	// Called from afterOnCellMouseDown (e.detail === 2) so it works for both
+	// readOnly (Text Editor) and non-readOnly (Long Text) column configs.
 	_maybe_open_html_editor(row, col) {
 		const col_def  = this.columns?.[col];
 		const ft       = col_def?._df?.fieldtype;
 		if (!["Text Editor", "Long Text"].includes(ft)) return;
 
-		// Close HOT's native text editor immediately — we take over
-		this.hot?.getActiveEditor()?.cancelChanges?.();
-		this.hot?.destroyEditor?.();
+		// If HOT opened a native editor (Long Text case), cancel it immediately
+		const editor = this.hot?.getActiveEditor?.();
+		if (editor?.isOpened?.()) editor.cancelChanges?.();
 
 		const d_src    = this.sheet_manager?.get_current()?.data || this.list_view?.data;
 		const row_data = d_src?.[row];
@@ -982,7 +987,10 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		const label    = col_def._df?.label || fn;
 		const raw_val  = row_data[fn];
 		const html_val = (raw_val != null && raw_val !== "") ? String(raw_val) : "";
-		const can_edit = !col_def.readOnly && !!this.list_view.can_write && !row_data._is_ct_spacer;
+		// can_edit: Text Editor is readOnly in HOT (display only) but IS editable via this modal
+		// if the user has write permission and the field has no read_only flag in the DocType meta.
+		const df_read_only = !!(col_def._df?.read_only);
+		const can_edit = !df_read_only && !!this.list_view.can_write && !row_data._is_ct_spacer;
 
 		const d = new frappe.ui.Dialog({
 			title: __(label),
