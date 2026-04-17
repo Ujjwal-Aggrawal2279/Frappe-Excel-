@@ -1081,6 +1081,19 @@
 		}
 	}
 
+	// ── HTML / Text Editor cell preview ─────────────────────────────────────
+	.ev-html-cell-preview {
+		font-size: 11px;
+		line-height: 1.4;
+		max-height: 40px;
+		overflow: hidden;
+		-webkit-mask-image: linear-gradient(to bottom, black 50%, transparent 100%);
+		mask-image: linear-gradient(to bottom, black 50%, transparent 100%);
+		word-break: break-word;
+		p { margin: 0; }
+		ul, ol { margin: 0; padding-left: 12px; }
+	}
+
 	// ── Currency / numeric ────────────────────────────────────────────────────
 	td.ev-currency-cell,
 	td.htNumeric {
@@ -16078,6 +16091,57 @@ body[data-route*="/Excel/"] {
 	}
 }
 
+// ── Rich-text / HTML field cell ───────────────────────────────────────────────
+
+.ev-ct-td--rich {
+	position: relative;
+	max-width: 300px;
+	padding: 4px 28px 4px 8px; // right padding reserves space for the edit button
+	vertical-align: top;
+
+	&:hover .ev-ct-rich-edit-btn { opacity: 1; }
+}
+
+.ev-ct-rich-preview {
+	font-size: 12px;
+	line-height: 1.5;
+	max-height: 80px;
+	overflow: hidden;
+	word-break: break-word;
+	// Fade out overflow content so it doesn't look clipped
+	-webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+	mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+
+	// Allow contained HTML/CSS to render
+	p { margin: 0 0 4px; }
+	ul, ol { margin: 0; padding-left: 16px; }
+	table { border-collapse: collapse; font-size: 11px; }
+	td, th { border: 1px solid #ddd; padding: 2px 4px; }
+}
+
+.ev-ct-rich-edit-btn {
+	position: absolute;
+	top: 4px;
+	right: 4px;
+	width: 20px;
+	height: 20px;
+	display: flex;
+	align-items: center;
+	justify-content: center;
+	border: 1px solid transparent;
+	border-radius: 3px;
+	background: transparent;
+	color: #555;
+	cursor: pointer;
+	opacity: 0;
+	transition: opacity 0.15s, background 0.1s;
+	outline: none;
+	padding: 0;
+
+	&:hover { background: #eaf2ec; border-color: #c4dbc9; color: #1d6f42; }
+	&:focus-visible { outline: 2px solid #1d6f42; opacity: 1; }
+}
+
 .ev-ct-row-num {
 	font-size: 10px;
 	color: #aaa;
@@ -16669,6 +16733,23 @@ body[data-route*="/Excel/"] {
 		border-color: #2e2e2e;
 		color: #e0e0e0;
 		&--readonly { background: #222222; color: #808080; }
+	}
+
+	// Rich text cell — dark theme
+	.ev-ct-td--rich {
+		border-color: #2e2e2e;
+	}
+	.ev-ct-rich-preview {
+		color: #d0d0d0;
+	}
+	.ev-ct-rich-edit-btn {
+		color: #888;
+		&:hover { background: #1a2e24; border-color: #2a4a38; color: #4caf82; }
+	}
+
+	// Main grid HTML/Text Editor preview
+	.ev-html-cell-preview {
+		color: #d0d0d0;
 	}
 
 	.ev-ct-row-num { color: #505050; }

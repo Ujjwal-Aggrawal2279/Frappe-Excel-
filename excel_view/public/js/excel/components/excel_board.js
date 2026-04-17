@@ -498,6 +498,8 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			afterRenderer: (TD, row, col, prop, value) => this._apply_cell_format(TD, row, col, value),
 			afterGetColHeader: (col, TH) => this._apply_col_header_format(TH, col),
 			afterOnCellMouseDown: (e, coords) => this._on_tree_row_click(e, coords),
+			// V3.5 — Double-click on HTML/Text Editor/Long Text: open render modal
+			afterBeginEditing: (row, col) => this._maybe_open_html_editor(row, col),
 			afterGetRowHeader: (row, TH) => {
 				// V3.1 — Hide row header TR for hidden rows (left clone overlay)
 				if (TH.parentNode) {
@@ -744,6 +746,20 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			return;
 		}
 
+		// V3.5 — Text Editor / Long Text: render HTML content as a preview (not raw markup)
+		const ft = this.columns[col]?._df?.fieldtype;
+		if (ft === "Text Editor" || ft === "Long Text") {
+			if (value != null && value !== "") {
+				TD.innerHTML = `<div class="ev-html-cell-preview">${String(value)}</div>`;
+			} else {
+				TD.innerHTML = "";
+			}
+			TD.style.padding = "2px 4px";
+			TD.style.verticalAlign = "top";
+			TD.title = __("Double-click to view / edit");
+			return;
+		}
+
 		// Formula display: replace raw formula string with the HyperFormula-computed result.
 		// HOT stores the literal "=SUM(B1:B3)" string; we swap it with the evaluated value.
 		// For V2.3 async ERP functions the value may be "#LOADING…", "#PERM_DENIED", "#ERR!",
@@ -945,6 +961,52 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		}
 		TD.style.setProperty("background-color", bg_color, "important");
 		TD.style.setProperty("background-image", "none", "important");
+	}
+
+	// V3.5 — HTML/Text Editor cell: intercept afterBeginEditing, close HOT editor,
+	// open a Frappe dialog that renders the HTML content and optionally edits it.
+	_maybe_open_html_editor(row, col) {
+		const col_def  = this.columns?.[col];
+		const ft       = col_def?._df?.fieldtype;
+		if (!["Text Editor", "Long Text"].includes(ft)) return;
+
+		// Close HOT's native text editor immediately — we take over
+		this.hot?.getActiveEditor()?.cancelChanges?.();
+		this.hot?.destroyEditor?.();
+
+		const d_src    = this.sheet_manager?.get_current()?.data || this.list_view?.data;
+		const row_data = d_src?.[row];
+		if (!row_data) return;
+
+		const fn       = col_def.data;
+		const label    = col_def._df?.label || fn;
+		const raw_val  = row_data[fn];
+		const html_val = (raw_val != null && raw_val !== "") ? String(raw_val) : "";
+		const can_edit = !col_def.readOnly && !!this.list_view.can_write && !row_data._is_ct_spacer;
+
+		const d = new frappe.ui.Dialog({
+			title: __(label),
+			size: "large",
+			fields: [
+				{
+					fieldtype: ft === "Long Text" ? "Long Text" : "Text Editor",
+					fieldname: "content",
+					label: __(label),
+					default: html_val,
+					read_only: can_edit ? 0 : 1,
+				},
+			],
+			primary_action_label: can_edit ? __("Save") : __("Close"),
+			primary_action: async (values) => {
+				if (!can_edit) { d.hide(); return; }
+				const new_val = values.content ?? "";
+				if (new_val === html_val) { d.hide(); return; }
+				// Push change through the normal save pipeline
+				this.hot?.setDataAtRowProp(row, fn, new_val, "edit");
+				d.hide();
+			},
+		});
+		d.show();
 	}
 
 	// V3.1 — Toggle Focus Cell crosshair

@@ -221,7 +221,29 @@ frappe.views.excel.ChildTableManager = class ChildTableManager {
 				this._open_col_chooser(e.currentTarget);
 			})
 			.on("click.ev-ct", ".ev-ct-collapse-btn", () => this.collapse())
-			.on("mousedown.ev-ct", ".ev-ct-resize-handle", (e) => this._start_resize(e));
+			.on("mousedown.ev-ct", ".ev-ct-resize-handle", (e) => this._start_resize(e))
+			// V3.5 — Rich-text / HTML field: open editor modal
+			.on("click.ev-ct", ".ev-ct-rich-edit-btn", (e) => {
+				const $td        = $(e.currentTarget).closest("td.ev-ct-td--rich");
+				const $tr        = $td.closest("tr.ev-ct-tr");
+				const child_name = $tr.data("child-name");
+				const fieldname  = e.currentTarget.dataset.fieldname;
+				const fieldtype  = e.currentTarget.dataset.fieldtype;
+				const label      = e.currentTarget.dataset.label;
+				const current    = $td.find(".ev-ct-rich-preview").html() || "";
+				this._open_rich_editor(child_name, fieldname, fieldtype, label, current);
+			});
+
+		// V3.5 — Stop scroll from bubbling to HOT grid when panel table can still scroll
+		this._$panel[0].addEventListener("wheel", (e) => {
+			const wrap = this._$panel[0].querySelector(".ev-ct-table-wrap");
+			if (!wrap) return;
+			const down = e.deltaY > 0;
+			const can  = down
+				? wrap.scrollTop + wrap.clientHeight < wrap.scrollHeight
+				: wrap.scrollTop > 0;
+			if (can) e.stopPropagation();
+		}, { passive: true });
 	}
 
 	// ── Resize handle drag ────────────────────────────────────────────────────
@@ -500,6 +522,23 @@ frappe.views.excel.ChildTableManager = class ChildTableManager {
 						input_html = `<input type="date" class="ev-ct-cell-input" ${data_attr}
 							data-original="${frappe.utils.escape_html(display)}"
 							value="${frappe.utils.escape_html(display)}">`;
+					} else if (["Text Editor", "Long Text"].includes(f.fieldtype)) {
+						// Render HTML content as live preview + edit button
+						const html_content = (raw_val != null && raw_val !== "") ? String(raw_val) : "";
+						return `<td class="ev-ct-td ev-ct-td--rich" ${data_attr}
+							data-fieldname="${frappe.utils.escape_html(f.fieldname)}"
+							data-fieldtype="${frappe.utils.escape_html(f.fieldtype)}">
+							<div class="ev-ct-rich-preview">${html_content}</div>
+							<button class="ev-ct-rich-edit-btn"
+								data-fieldname="${frappe.utils.escape_html(f.fieldname)}"
+								data-fieldtype="${frappe.utils.escape_html(f.fieldtype)}"
+								data-label="${frappe.utils.escape_html(__(f.label || f.fieldname))}"
+								title="${frappe.utils.escape_html(__("Edit {0}", [f.label || f.fieldname]))}">
+								<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+									<path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10 10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1 .11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5 12.5 1.207zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1 .5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293zm-9.761 5.175-.106.106-1.528 3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0 1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/>
+								</svg>
+							</button>
+						</td>`;
 					} else {
 						input_html = `<input type="text" class="ev-ct-cell-input" ${data_attr}
 							data-original="${frappe.utils.escape_html(display)}"
@@ -833,6 +872,66 @@ frappe.views.excel.ChildTableManager = class ChildTableManager {
 			).join("")
 		);
 		this._bind_cell_edit_listeners(visible_fields, tab_data.child_doctype);
+	}
+
+	// ── Rich-text / HTML field editor modal ──────────────────────────────────
+
+	_open_rich_editor(child_name, fieldname, fieldtype, label, current_html) {
+		if (!this._state) return;
+		const can_write = this.board.list_view.can_write;
+		const { active_tab, rows_by_tab } = this._state;
+		const tab_data = rows_by_tab.get(active_tab);
+		const { is_submitted, is_cancelled } = tab_data
+			? this._get_submit_flags(tab_data)
+			: { is_submitted: false, is_cancelled: false };
+
+		const is_readonly = !child_name || !can_write || is_cancelled;
+		// submitted docs: writable only if field has allow_on_submit
+		const submitted_lock = is_submitted && tab_data
+			? !tab_data.fields.find(f => f.fieldname === fieldname)?.allow_on_submit
+			: false;
+		const read_only_mode = is_readonly || submitted_lock;
+
+		const editor_fieldtype = fieldtype === "Long Text" ? "Long Text" : "Text Editor";
+
+		const d = new frappe.ui.Dialog({
+			title: __(label),
+			size: "large",
+			fields: [
+				{
+					fieldtype: editor_fieldtype,
+					fieldname: "content",
+					label: __(label),
+					default: current_html,
+					read_only: read_only_mode ? 1 : 0,
+				},
+			],
+			primary_action_label: read_only_mode ? __("Close") : __("Save"),
+			primary_action: async (values) => {
+				if (read_only_mode) { d.hide(); return; }
+				const new_val = values.content ?? "";
+				if (new_val === current_html) { d.hide(); return; }
+				try {
+					await this._ev_call("excel_view.api.save_child_row", {
+						doctype:        this.board.doctype,
+						parent_name:    this._state.parent_name,
+						child_fieldname: active_tab,
+						child_name,
+						fields: JSON.stringify({ [fieldname]: new_val }),
+					});
+					// Update in-memory cache
+					this._update_cached_row(child_name, fieldname, new_val);
+					// Refresh preview in panel without full reload
+					const $td = this._$panel?.find(
+						`tr[data-child-name="${child_name}"] td[data-fieldname="${fieldname}"]`
+					);
+					$td.find(".ev-ct-rich-preview").html(new_val);
+					frappe.show_alert({ message: __("Saved"), indicator: "green" }, 2);
+					d.hide();
+				} catch (_) { /* error shown by _ev_call */ }
+			},
+		});
+		d.show();
 	}
 
 	// ── Column chooser ────────────────────────────────────────────────────────
