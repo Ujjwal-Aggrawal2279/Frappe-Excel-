@@ -878,60 +878,142 @@ frappe.views.excel.ChildTableManager = class ChildTableManager {
 
 	_open_rich_editor(child_name, fieldname, fieldtype, label, current_html) {
 		if (!this._state) return;
-		const can_write = this.board.list_view.can_write;
+		const can_write     = this.board.list_view.can_write;
 		const { active_tab, rows_by_tab } = this._state;
-		const tab_data = rows_by_tab.get(active_tab);
+		const tab_data      = rows_by_tab.get(active_tab);
 		const { is_submitted, is_cancelled } = tab_data
 			? this._get_submit_flags(tab_data)
 			: { is_submitted: false, is_cancelled: false };
 
-		const is_readonly = !child_name || !can_write || is_cancelled;
-		// submitted docs: writable only if field has allow_on_submit
+		const is_readonly    = !child_name || !can_write || is_cancelled;
 		const submitted_lock = is_submitted && tab_data
 			? !tab_data.fields.find(f => f.fieldname === fieldname)?.allow_on_submit
 			: false;
-		const read_only_mode = is_readonly || submitted_lock;
+		const can_edit       = !is_readonly && !submitted_lock;
+		const editor_ft      = fieldtype === "Long Text" ? "Long Text" : "Text Editor";
+		const escaped_label  = frappe.utils.escape_html(__(label));
 
-		const editor_fieldtype = fieldtype === "Long Text" ? "Long Text" : "Text Editor";
+		// ── EV Rich Text Editor modal (same design system as main grid) ───────────
+		const $overlay = $(`
+			<div class="ev-rte-overlay" role="dialog" aria-modal="true"
+				aria-label="${escaped_label}">
+				<div class="ev-rte-modal">
+					<div class="ev-rte-header">
+						<div class="ev-rte-header-left">
+							<svg class="ev-rte-icon" width="14" height="14" viewBox="0 0 16 16"
+								fill="currentColor" aria-hidden="true">
+								<path d="M12.146.146a.5.5 0 0 1 .708 0l3 3a.5.5 0 0 1 0 .708l-10
+								10a.5.5 0 0 1-.168.11l-5 2a.5.5 0 0 1-.65-.65l2-5a.5.5 0 0 1
+								.11-.168l10-10zM11.207 2.5 13.5 4.793 14.793 3.5
+								12.5 1.207zm1.586 3L10.5 3.207 4 9.707V10h.5a.5.5 0 0 1
+								.5.5v.5h.5a.5.5 0 0 1 .5.5v.5h.293zm-9.761 5.175-.106.106-1.528
+								3.821 3.821-1.528.106-.106A.5.5 0 0 1 5 12.5V12h-.5a.5.5 0 0
+								1-.5-.5V11h-.5a.5.5 0 0 1-.468-.325z"/>
+							</svg>
+							<span class="ev-rte-title">${escaped_label}</span>
+							<span class="ev-rte-ft-tag">${frappe.utils.escape_html(editor_ft)}</span>
+						</div>
+						<div class="ev-rte-header-right">
+							${can_edit
+								? `<span class="ev-rte-status ev-rte-status--edit">
+									<span class="ev-rte-status-dot"></span>${__("Editing")}
+								   </span>`
+								: `<span class="ev-rte-status ev-rte-status--view">${__("View Only")}</span>`}
+							<button class="ev-rte-close-btn" aria-label="${__("Close")}">
+								<svg width="12" height="12" viewBox="0 0 12 12" fill="none">
+									<path d="M1 1l10 10M11 1L1 11" stroke="currentColor"
+										stroke-width="1.8" stroke-linecap="round"/>
+								</svg>
+							</button>
+						</div>
+					</div>
+					<div class="ev-rte-editor-area"></div>
+					<div class="ev-rte-footer">
+						<span class="ev-rte-shortcut-hint">
+							${can_edit ? `<kbd>Ctrl</kbd><span>+</span><kbd>S</kbd> ${__("to save")}` : ""}
+						</span>
+						<div class="ev-rte-footer-actions">
+							<button class="ev-rte-cancel-btn">${__("Cancel")}</button>
+							${can_edit
+								? `<button class="ev-rte-save-btn">
+									<svg width="11" height="11" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true">
+										<path d="M2 1a1 1 0 0 0-1 1v12a1 1 0 0 0 1 1h12a1 1 0 0 0
+										1-1V4.5a.5.5 0 0 0-.146-.354l-3-3A.5.5 0 0 0 11.5
+										1H2zm0 1h9.293L14 4.707V14H2V2zm2 2h5a1 1 0 0 1 1 1v1a1
+										1 0 0 1-1 1H4a1 1 0 0 1-1-1V5a1 1 0 0 1 1-1zm0 5h8v1H4v-1zm0
+										2h8v1H4v-1z"/>
+									</svg>
+									${__("Save Changes")}
+								   </button>`
+								: ""}
+						</div>
+					</div>
+				</div>
+			</div>
+		`).appendTo(document.body);
 
-		const d = new frappe.ui.Dialog({
-			title: __(label),
-			size: "large",
-			fields: [
-				{
-					fieldtype: editor_fieldtype,
-					fieldname: "content",
-					label: __(label),
-					default: current_html,
-					read_only: read_only_mode ? 1 : 0,
-				},
-			],
-			primary_action_label: read_only_mode ? __("Close") : __("Save"),
-			primary_action: async (values) => {
-				if (read_only_mode) { d.hide(); return; }
-				const new_val = values.content ?? "";
-				if (new_val === current_html) { d.hide(); return; }
-				try {
-					await this._ev_call("excel_view.api.save_child_row", {
-						doctype:        this.board.doctype,
-						parent_name:    this._state.parent_name,
-						child_fieldname: active_tab,
-						child_name,
-						fields: JSON.stringify({ [fieldname]: new_val }),
-					});
-					// Update in-memory cache
-					this._update_cached_row(child_name, fieldname, new_val);
-					// Refresh preview in panel without full reload
-					const $td = this._$panel?.find(
-						`tr[data-child-name="${child_name}"] td[data-fieldname="${fieldname}"]`
-					);
-					$td.find(".ev-ct-rich-preview").html(new_val);
-					frappe.show_alert({ message: __("Saved"), indicator: "green" }, 2);
-					d.hide();
-				} catch (_) { /* error shown by _ev_call */ }
-			},
+		const $area  = $overlay.find(".ev-rte-editor-area");
+		let _control = null;
+		try {
+			_control = frappe.ui.form.make_control({
+				df: { fieldtype: editor_ft, fieldname: "ev_rte_ct_content", label: "", read_only: can_edit ? 0 : 1 },
+				parent:       $area[0],
+				render_input: true,
+			});
+			setTimeout(() => { try { _control.set_value(current_html); } catch (_) {} }, 60);
+		} catch (_e) {
+			$area.html(`<textarea class="ev-rte-fallback-ta"
+				${can_edit ? "" : "readonly"}
+				placeholder="${frappe.utils.escape_html(__("No content"))}"
+			>${frappe.utils.escape_html(current_html)}</textarea>`);
+		}
+
+		const _get_value = () => {
+			if (_control) { try { return _control.get_value() ?? ""; } catch (_) {} }
+			return $area.find(".ev-rte-fallback-ta").val() || "";
+		};
+
+		const close = () => {
+			$(document).off("keydown.ev-rte-ct");
+			$overlay[0].classList.remove("ev-rte-overlay--in");
+			setTimeout(() => $overlay.remove(), 180);
+		};
+
+		const save = async () => {
+			const new_val = _get_value();
+			if (new_val === current_html) { close(); return; }
+			try {
+				await this._ev_call("excel_view.api.save_child_row", {
+					doctype:         this.board.doctype,
+					parent_name:     this._state.parent_name,
+					child_fieldname: active_tab,
+					child_name,
+					fields: JSON.stringify({ [fieldname]: new_val }),
+				});
+				this._update_cached_row(child_name, fieldname, new_val);
+				this._$panel?.find(
+					`tr[data-child-name="${child_name}"] td[data-fieldname="${fieldname}"] .ev-ct-rich-preview`
+				).html(new_val);
+				frappe.views.excel.toast(__("Saved"), "success", 2500);
+				close();
+			} catch (_) { /* error shown by _ev_call */ }
+		};
+
+		$overlay
+			.on("click", ".ev-rte-close-btn, .ev-rte-cancel-btn", close)
+			.on("click", (e) => { if ($(e.target).is(".ev-rte-overlay")) close(); })
+			.on("click", ".ev-rte-save-btn", save);
+
+		$(document).on("keydown.ev-rte-ct", (e) => {
+			if (e.key === "Escape") { close(); return; }
+			if ((e.ctrlKey || e.metaKey) && e.key === "s" && can_edit) {
+				e.preventDefault(); save();
+			}
 		});
-		d.show();
+
+		requestAnimationFrame(() => requestAnimationFrame(() => {
+			$overlay[0].classList.add("ev-rte-overlay--in");
+		}));
 	}
 
 	// ── Column chooser ────────────────────────────────────────────────────────

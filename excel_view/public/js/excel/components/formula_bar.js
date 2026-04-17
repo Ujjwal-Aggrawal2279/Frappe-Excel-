@@ -118,8 +118,18 @@ frappe.views.excel.FormulaBar = class FormulaBar {
 		if (formula) {
 			this.$formula.val(formula);
 		} else {
-			const raw = this.board.matrix?.[row]?.[col] ?? "";
-			this.$formula.val(raw !== null && raw !== undefined ? raw : "");
+			let raw = this.board.matrix?.[row]?.[col] ?? "";
+			if (raw !== null && raw !== undefined) raw = String(raw);
+
+			// V3.5 — For Text Editor / Long Text cells the raw value is HTML markup.
+			// Strip tags so the formula bar shows readable text, not <div class="ql-editor">…
+			const col_def = this.board.columns?.[col];
+			const ft = col_def?._df?.fieldtype;
+			if ((ft === "Text Editor" || ft === "Long Text") && raw) {
+				raw = raw.replace(/<[^>]*>/g, " ").replace(/\s{2,}/g, " ").trim();
+			}
+
+			this.$formula.val(raw !== "" ? raw : "");
 		}
 	}
 
