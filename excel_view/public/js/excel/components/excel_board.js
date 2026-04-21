@@ -857,7 +857,7 @@ frappe.views.ExcelBoard = class ExcelBoard {
 				const raw = this.list_view?.data?.[row]?.[this.columns[col]?.data];
 				const num = parseFloat(raw);
 				if (!isNaN(num)) {
-					TD.textContent = ExcelBoard._format_num(num, fmt.numfmt, fmt.decimals ?? 2, fmt.currency_sym ?? "$");
+					TD.textContent = ExcelBoard._format_num(num, fmt.numfmt, fmt.decimals ?? 2, fmt.currency_sym ?? null);
 					if (!fmt.align) TD.style.textAlign = "right";
 				}
 			}
@@ -1969,7 +1969,11 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	 * @param {number} decimals
 	 * @param {string} sym      - currency symbol
 	 */
-	static _format_num(value, numfmt, decimals = 2, sym = "$") {
+	static _format_num(value, numfmt, decimals = 2, sym = null) {
+		if (!sym) {
+			const def_cur = frappe.boot?.sysdefaults?.currency;
+			sym = (def_cur && frappe.currency_symbols?.[def_cur]) || frappe.boot?.sysdefaults?.currency || "$";
+		}
 		switch (numfmt) {
 			case "number":
 				return value.toLocaleString(undefined, { minimumFractionDigits: decimals, maximumFractionDigits: decimals });
