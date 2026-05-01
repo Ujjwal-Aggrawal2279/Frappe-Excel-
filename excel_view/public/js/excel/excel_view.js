@@ -7,10 +7,10 @@
  * Class discovery: ListFactory looks for frappe.views["ExcelView"]
  * Route: /app/{doctype}/view/excel
  *
- * Sidebar collapse and primary-button hiding are handled entirely in
- * excel_view.bundle.scss via body[data-route$="/Excel"] selectors.
- * Frappe sets data-route on <body> synchronously on every route change,
- * so there are no JS timing dependencies for those visual concerns.
+ * Primary-button hiding is handled in excel_view.bundle.scss via
+ * body[data-route$="/Excel"] selectors. The sidebar is visible by default
+ * in Excel View; it's only hidden when full-page mode is active
+ * (body.ev-full-page).
  */
 
 frappe.provide("frappe.views");
@@ -222,9 +222,9 @@ frappe.views.ExcelView = class ExcelView extends frappe.views.ListView {
 	// ── Sidebar ───────────────────────────────────────────────────────────────
 
 	toggle_side_bar() {
-		// Sidebar is collapsed via CSS (body[data-route$="/Excel"]) — toggling
-		// it while in Excel View would break the grid layout.  Suppress the
-		// action but still re-render HOT in case the container shifted.
+		// Allow normal sidebar toggle, then re-render HOT after the layout
+		// settles so the grid resizes to match the new container width.
+		super.toggle_side_bar();
 		requestAnimationFrame(() => {
 			this.excel_board?.resize();
 		});
@@ -244,6 +244,7 @@ frappe.views.ExcelView = class ExcelView extends frappe.views.ListView {
 	 */
 	on_hide() {
 		$(".page-head").removeClass("ev-page-active");
+		$("body").removeClass("ev-full-page");
 		this.excel_board?.destroy();
 		this.excel_board = null;
 	}

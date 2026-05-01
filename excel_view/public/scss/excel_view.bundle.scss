@@ -2041,12 +2041,6 @@
 
 .ev-page-active {
 	z-index: 200 !important;
-
-	// Disable the Toggle Sidebar button — sidebar is hidden in Excel View.
-	.list-sidebar-button {
-		pointer-events: none !important;
-		opacity: 0.3 !important;
-	}
 }
 
 // .page-form is inside .ev-page (page.main), NOT inside .ev-page-active (page-head).
@@ -14981,7 +14975,29 @@ $fc-card-colors: (
 // Covers /app/<doctype>/view/excel (route = "List/<Doctype>/Excel").
 body[data-route$="/Excel"],
 body[data-route*="/Excel/"] {
-	// Collapse the list sidebar — grid needs full width.
+	// Hide the "Add <DocType>" primary action button — records are inserted
+	// directly from the grid's bottom insert row.
+	.page-actions .primary-action {
+		display: none !important;
+	}
+}
+
+// ── Excel View — Full Page mode ───────────────────────────────────────────────
+// Set on <body> by toolbar's _toggle_full_page(). Hides the global Frappe
+// navbar and page-head so the grid uses the entire viewport. Toolbar/formula
+// bar stay visible so the user can return via "Back to Default View" or Esc.
+body.ev-full-page {
+	// Override the global navbar-height variable so anything sized via
+	// calc(100vh - var(--navbar-height)) reclaims that space.
+	--navbar-height: 0px;
+
+	.navbar,
+	header.navbar,
+	.page-head {
+		display: none !important;
+	}
+
+	// Hide the list sidebar in full-page mode — grid needs full width.
 	.layout-side-section {
 		display: none !important;
 	}
@@ -14990,10 +15006,19 @@ body[data-route*="/Excel/"] {
 		max-width: 100% !important;
 	}
 
-	// Hide the "Add <DocType>" primary action button — records are inserted
-	// directly from the grid's bottom insert row.
-	.page-actions .primary-action {
-		display: none !important;
+	// Remove container max-width / padding so the grid can go edge-to-edge.
+	#body, .main-section, .container, .page-container,
+	.layout-main-section-wrapper, .layout-main-section,
+	.frappe-list, .ev-page {
+		max-width: 100% !important;
+		padding-left: 0 !important;
+		padding-right: 0 !important;
+	}
+
+	// Full-page button — make the active state visually distinct.
+	.ev-fullpage-btn.ev-active {
+		background: var(--ev-accent, #217346);
+		color: #fff;
 	}
 }
 
