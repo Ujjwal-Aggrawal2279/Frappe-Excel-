@@ -46,6 +46,8 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		this._new_row_idx = -1;
 		// V3.1 — Hidden rows (board-level Set, HOT 6 uses updateSettings not getPlugin)
 		this._hidden_rows = new Set();
+		// Zoom level (1.0 = 100%) — applied as CSS `zoom` on $hot_container.
+		this._zoom_level = 1.0;
 		// V3.1 — Focus Cell (crosshair)
 		this._focus_enabled = false;
 		this._focus_color = "#217346"; // Excel green default
@@ -4992,6 +4994,26 @@ frappe.views.ExcelBoard = class ExcelBoard {
 	resize() {
 		this.hot?.render();
 	}
+
+	// ── Zoom ───────────────────────────────────────────────────────────────────
+	// Applied as CSS `zoom` on the HOT container. Modern browsers (Chrome,
+	// Safari, Firefox 126+, Edge) scale layout, fonts, borders, and hit-tests
+	// uniformly — unlike `transform: scale()` which breaks click coordinates.
+
+	_apply_zoom(level) {
+		const clamped = Math.max(0.5, Math.min(3.0, Math.round(level * 100) / 100));
+		if (clamped === this._zoom_level && this.$hot_container?.[0]?.style.zoom) return;
+		this._zoom_level = clamped;
+		const el = this.$hot_container?.[0];
+		if (el) el.style.zoom = clamped;
+		this.toolbar_component?._sync_zoom_state?.();
+		// Re-render so HOT recalculates internal viewport sizing.
+		requestAnimationFrame(() => this.hot?.render());
+	}
+
+	zoom_in()    { this._apply_zoom(this._zoom_level + 0.1); }
+	zoom_out()   { this._apply_zoom(this._zoom_level - 0.1); }
+	zoom_reset() { this._apply_zoom(1.0); }
 
 	// ── V2.5 Sheet context switching ──────────────────────────────────────────
 
