@@ -604,6 +604,24 @@ frappe.views.ExcelBoard = class ExcelBoard {
 			scroll_target.addEventListener("scroll", on_scroll, { passive: true });
 			// Store reference for cleanup on destroy
 			this._scroll_listener = { target: scroll_target, fn: on_scroll };
+
+			// ── Shift+Wheel = horizontal scroll (Excel-style) ──
+			// HOT attaches its own wheel listener to .wtHolder. We use capture
+			// phase here so we intercept before HOT's handler runs — otherwise
+			// HOT scrolls vertically before our preventDefault takes effect.
+			const hot_el = this.$hot_container[0];
+			const on_wheel = (e) => {
+				if (!e.shiftKey) return;
+				if (e.deltaY === 0) return;
+				e.preventDefault();
+				e.stopPropagation();
+				const master_holder = hot_el.querySelector(".wtHolder");
+				if (master_holder && master_holder.scrollWidth > master_holder.clientWidth) {
+					master_holder.scrollLeft += e.deltaY;
+				}
+			};
+			hot_el.addEventListener("wheel", on_wheel, { capture: true, passive: false });
+			this._wheel_listener = { target: hot_el, fn: on_wheel };
 		}, 0);
 	}
 
@@ -5531,6 +5549,11 @@ frappe.views.ExcelBoard = class ExcelBoard {
 		if (this._scroll_listener) {
 			this._scroll_listener.target.removeEventListener("scroll", this._scroll_listener.fn);
 			this._scroll_listener = null;
+		}
+		// Remove shift+wheel horizontal-scroll listener
+		if (this._wheel_listener) {
+			this._wheel_listener.target.removeEventListener("wheel", this._wheel_listener.fn, { capture: true });
+			this._wheel_listener = null;
 		}
 		this.toolbar_component?.destroy();
 		this.formula_bar_component?.destroy();
