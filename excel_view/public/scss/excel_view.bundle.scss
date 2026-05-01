@@ -2049,6 +2049,28 @@
 	}
 }
 
+// ── Zoom controls — appears in Home + View tabs ───────────────────────────────
+.ev-zoom-group {
+	display: inline-flex;
+	align-items: center;
+	gap: 1px;
+
+	.ev-tb-btn {
+		padding: 0 6px;
+		min-width: 22px;
+	}
+
+	.ev-zoom-display {
+		min-width: 44px;
+		font-variant-numeric: tabular-nums;
+	}
+
+	.ev-zoom-pct {
+		font-size: 11px;
+		font-weight: 500;
+	}
+}
+
 // .page-form is inside .ev-page (page.main), NOT inside .ev-page-active (page-head).
 // They are siblings at the page level, so hide filter+sort bar from .ev-page context.
 .ev-page {

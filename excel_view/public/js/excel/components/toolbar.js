@@ -148,6 +148,18 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 						<button class="ev-tb-btn ev-cf-open-btn" data-ev-tip="${__("Conditional Formatting")}">
 							<svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><rect x="1" y="1" width="5" height="5" rx="1" fill="#e06c6c"/><rect x="8" y="1" width="5" height="5" rx="1" fill="#70b870"/><rect x="1" y="8" width="5" height="5" rx="1" fill="#70b870"/><rect x="8" y="8" width="5" height="5" rx="1" fill="#4c8abf"/></svg>
 						</button>
+						<div class="ev-tb-sep"></div>
+						<div class="ev-zoom-group">
+							<button class="ev-tb-btn ev-zoom-out" data-ev-tip="${__("Zoom Out")} (Ctrl+-)">
+								<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="3" y1="7" x2="11" y2="7"/></svg>
+							</button>
+							<button class="ev-tb-btn ev-zoom-display" data-ev-tip="${__("Reset Zoom")} (Ctrl+0)">
+								<span class="ev-zoom-pct">100%</span>
+							</button>
+							<button class="ev-tb-btn ev-zoom-in" data-ev-tip="${__("Zoom In")} (Ctrl+=)">
+								<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="3" y1="7" x2="11" y2="7"/><line x1="7" y1="3" x2="7" y2="11"/></svg>
+							</button>
+						</div>
 					</div>
 
 					<!-- INSERT TAB ──────────────────────────────────────────── -->
@@ -277,6 +289,18 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 						<div class="ev-focus-color-wrap">
 							<button class="ev-tb-btn ev-focus-color-btn" data-ev-tip="${__("Focus Color")}">
 								<span class="ev-focus-color-swatch" style="background:#217346"></span>
+							</button>
+						</div>
+						<div class="ev-tb-sep"></div>
+						<div class="ev-zoom-group">
+							<button class="ev-tb-btn ev-zoom-out" data-ev-tip="${__("Zoom Out")} (Ctrl+-)">
+								<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="3" y1="7" x2="11" y2="7"/></svg>
+							</button>
+							<button class="ev-tb-btn ev-zoom-display" data-ev-tip="${__("Reset Zoom")} (Ctrl+0)">
+								<span class="ev-zoom-pct">100%</span>
+							</button>
+							<button class="ev-tb-btn ev-zoom-in" data-ev-tip="${__("Zoom In")} (Ctrl+=)">
+								<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="3" y1="7" x2="11" y2="7"/><line x1="7" y1="3" x2="7" y2="11"/></svg>
 							</button>
 						</div>
 					</div><!-- /view pane -->
@@ -892,6 +916,29 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 			setTimeout(() => $(document).one("click.ev-focus-portal", () => $portal.remove()), 100);
 		});
 
+		// ── Zoom controls (Home + View tabs) ───────────────────────────────
+		$w.on("click", ".ev-zoom-in",      () => this.board.zoom_in());
+		$w.on("click", ".ev-zoom-out",     () => this.board.zoom_out());
+		$w.on("click", ".ev-zoom-display", () => this.board.zoom_reset());
+
+		// Keyboard shortcuts: Ctrl/Cmd + Plus / Minus / 0
+		$(document).on("keydown.ev-zoom", (e) => {
+			if (!(e.ctrlKey || e.metaKey)) return;
+			if ($(e.target).is("input, textarea, [contenteditable='true']")) return;
+			// Match both "=" (US layout, no shift) and "+" (with shift), and "-"
+			if (e.key === "=" || e.key === "+") {
+				e.preventDefault();
+				this.board.zoom_in();
+			} else if (e.key === "-" || e.key === "_") {
+				e.preventDefault();
+				this.board.zoom_out();
+			} else if (e.key === "0") {
+				e.preventDefault();
+				this.board.zoom_reset();
+			}
+		});
+
+
 		// ── Close popups on outside click ───────────────────────────────────
 		$(document).on("click.ev-toolbar", (e) => {
 			if (!$(e.target).closest(".ev-palette-popup, .ev-color-trigger").length) {
@@ -973,6 +1020,13 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		$(this.wrapper).find(".ev-text-bar").css("background", tc);
 		$(this.wrapper).find(".ev-bg-bar").css("background", bc);
 	}
+
+	/** Update the zoom percentage display in the toolbar. */
+	_sync_zoom_state() {
+		const pct = Math.round((this.board?._zoom_level ?? 1) * 100) + "%";
+		$(this.wrapper).find(".ev-zoom-pct").text(pct);
+	}
+
 
 	/** Sync View-tab UI state (gridlines + focus cell) from current board state. */
 	_sync_view_state() {
@@ -1064,6 +1118,7 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 
 	destroy() {
 		$(document).off("click.ev-toolbar");
+		$(document).off("keydown.ev-zoom");
 		$("#ev-freeze-portal").remove();
 		$(this.wrapper).empty();
 	}
