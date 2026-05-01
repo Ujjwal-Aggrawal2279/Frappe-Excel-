@@ -148,6 +148,18 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 						<button class="ev-tb-btn ev-cf-open-btn" data-ev-tip="${__("Conditional Formatting")}">
 							<svg width="14" height="14" viewBox="0 0 14 14" fill="currentColor"><rect x="1" y="1" width="5" height="5" rx="1" fill="#e06c6c"/><rect x="8" y="1" width="5" height="5" rx="1" fill="#70b870"/><rect x="1" y="8" width="5" height="5" rx="1" fill="#70b870"/><rect x="8" y="8" width="5" height="5" rx="1" fill="#4c8abf"/></svg>
 						</button>
+						<div class="ev-tb-sep"></div>
+						<div class="ev-zoom-group">
+							<button class="ev-tb-btn ev-zoom-out" data-ev-tip="${__("Zoom Out")} (Ctrl+-)">
+								<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="3" y1="7" x2="11" y2="7"/></svg>
+							</button>
+							<button class="ev-tb-btn ev-zoom-display" data-ev-tip="${__("Reset Zoom")} (Ctrl+0)">
+								<span class="ev-zoom-pct">100%</span>
+							</button>
+							<button class="ev-tb-btn ev-zoom-in" data-ev-tip="${__("Zoom In")} (Ctrl+=)">
+								<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="3" y1="7" x2="11" y2="7"/><line x1="7" y1="3" x2="7" y2="11"/></svg>
+							</button>
+						</div>
 					</div>
 
 					<!-- INSERT TAB ──────────────────────────────────────────── -->
@@ -285,6 +297,17 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 							<svg class="ev-fp-icon-exit" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="display:none"><path d="M5 2v3H2M9 5h3V2M12 9H9v3M5 12V9H2"/></svg>
 							<span class="ev-fullpage-label">${__("Full Page")}</span>
 						</button>
+						<div class="ev-zoom-group">
+							<button class="ev-tb-btn ev-zoom-out" data-ev-tip="${__("Zoom Out")} (Ctrl+-)">
+								<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="3" y1="7" x2="11" y2="7"/></svg>
+							</button>
+							<button class="ev-tb-btn ev-zoom-display" data-ev-tip="${__("Reset Zoom")} (Ctrl+0)">
+								<span class="ev-zoom-pct">100%</span>
+							</button>
+							<button class="ev-tb-btn ev-zoom-in" data-ev-tip="${__("Zoom In")} (Ctrl+=)">
+								<svg width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><line x1="3" y1="7" x2="11" y2="7"/><line x1="7" y1="3" x2="7" y2="11"/></svg>
+							</button>
+						</div>
 					</div><!-- /view pane -->
 
 					<!-- Spacer pushes right section to far right -->
@@ -910,6 +933,28 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 			this._toggle_full_page(false);
 		});
 
+		// ── Zoom controls (Home + View tabs) ───────────────────────────────
+		$w.on("click", ".ev-zoom-in",      () => this.board.zoom_in());
+		$w.on("click", ".ev-zoom-out",     () => this.board.zoom_out());
+		$w.on("click", ".ev-zoom-display", () => this.board.zoom_reset());
+
+		// Keyboard shortcuts: Ctrl/Cmd + Plus / Minus / 0
+		$(document).on("keydown.ev-zoom", (e) => {
+			if (!(e.ctrlKey || e.metaKey)) return;
+			if ($(e.target).is("input, textarea, [contenteditable='true']")) return;
+			if (e.key === "=" || e.key === "+") {
+				e.preventDefault();
+				this.board.zoom_in();
+			} else if (e.key === "-" || e.key === "_") {
+				e.preventDefault();
+				this.board.zoom_out();
+			} else if (e.key === "0") {
+				e.preventDefault();
+				this.board.zoom_reset();
+			}
+		});
+
+
 		// ── Close popups on outside click ───────────────────────────────────
 		$(document).on("click.ev-toolbar", (e) => {
 			if (!$(e.target).closest(".ev-palette-popup, .ev-color-trigger").length) {
@@ -1022,6 +1067,13 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		});
 	}
 
+	/** Update the zoom percentage display in the toolbar. */
+	_sync_zoom_state() {
+		const pct = Math.round((this.board?._zoom_level ?? 1) * 100) + "%";
+		$(this.wrapper).find(".ev-zoom-pct").text(pct);
+	}
+
+
 	/** Sync View-tab UI state (gridlines + focus cell) from current board state. */
 	_sync_view_state() {
 		const hidden = frappe.get_user_settings(this.board.doctype)?.excel_hide_gridlines;
@@ -1113,6 +1165,7 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 	destroy() {
 		$(document).off("click.ev-toolbar");
 		$(document).off("keydown.ev-fullpage");
+		$(document).off("keydown.ev-zoom");
 		$("body").removeClass("ev-full-page");
 		$("#ev-freeze-portal").remove();
 		$(this.wrapper).empty();
