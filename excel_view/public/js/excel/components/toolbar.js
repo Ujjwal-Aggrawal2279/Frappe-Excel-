@@ -279,6 +279,12 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 								<span class="ev-focus-color-swatch" style="background:#217346"></span>
 							</button>
 						</div>
+						<div class="ev-tb-sep"></div>
+						<button class="ev-tb-btn ev-fullpage-btn" data-ev-tip="${__("Toggle Full Page (Esc to exit)")}">
+							<svg class="ev-fp-icon-enter" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"><path d="M2 5V2h3M9 2h3v3M12 9v3h-3M5 12H2V9"/></svg>
+							<svg class="ev-fp-icon-exit" width="14" height="14" viewBox="0 0 14 14" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" style="display:none"><path d="M5 2v3H2M9 5h3V2M12 9H9v3M5 12V9H2"/></svg>
+							<span class="ev-fullpage-label">${__("Full Page")}</span>
+						</button>
 					</div><!-- /view pane -->
 
 					<!-- Spacer pushes right section to far right -->
@@ -892,6 +898,18 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 			setTimeout(() => $(document).one("click.ev-focus-portal", () => $portal.remove()), 100);
 		});
 
+		// ── View tab: Full Page toggle ──────────────────────────────────────
+		$w.on("click", ".ev-fullpage-btn", () => this._toggle_full_page());
+
+		// Esc exits full-page mode (ignore when typing in inputs)
+		$(document).on("keydown.ev-fullpage", (e) => {
+			if (e.key !== "Escape") return;
+			if (!this._full_page_mode) return;
+			if ($(e.target).is("input, textarea, [contenteditable='true']")) return;
+			e.preventDefault();
+			this._toggle_full_page(false);
+		});
+
 		// ── Close popups on outside click ───────────────────────────────────
 		$(document).on("click.ev-toolbar", (e) => {
 			if (!$(e.target).closest(".ev-palette-popup, .ev-color-trigger").length) {
@@ -972,6 +990,36 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 		this._last_bg_color   = bc;
 		$(this.wrapper).find(".ev-text-bar").css("background", tc);
 		$(this.wrapper).find(".ev-bg-bar").css("background", bc);
+	}
+
+	/**
+	 * Toggle full-page mode: hides global navbar/page-head so the grid fills
+	 * the entire viewport. Esc or clicking the toggle returns to default.
+	 * @param {boolean} [force] - explicit on/off; omit to flip current state
+	 */
+	_toggle_full_page(force) {
+		const enable = (typeof force === "boolean") ? force : !this._full_page_mode;
+		if (enable === this._full_page_mode) return;
+		this._full_page_mode = enable;
+
+		$("body").toggleClass("ev-full-page", enable);
+
+		const $btn = $(this.wrapper).find(".ev-fullpage-btn");
+		$btn.toggleClass("ev-active", enable);
+		$btn.find(".ev-fullpage-label").text(enable ? __("Back to Default View") : __("Full Page"));
+		$btn.find(".ev-fp-icon-enter").toggle(!enable);
+		$btn.find(".ev-fp-icon-exit").toggle(enable);
+
+		// Layout shifted — re-measure HOT container and re-render so the grid
+		// uses the newly available height.
+		requestAnimationFrame(() => {
+			const container = this.board?.$hot_container?.[0];
+			if (this.board?.hot && container) {
+				const h = container.clientHeight;
+				if (h > 0) this.board.hot.updateSettings({ height: h });
+				this.board.hot.render();
+			}
+		});
 	}
 
 	/** Sync View-tab UI state (gridlines + focus cell) from current board state. */
@@ -1064,6 +1112,8 @@ frappe.views.excel.ExcelToolbar = class ExcelToolbar {
 
 	destroy() {
 		$(document).off("click.ev-toolbar");
+		$(document).off("keydown.ev-fullpage");
+		$("body").removeClass("ev-full-page");
 		$("#ev-freeze-portal").remove();
 		$(this.wrapper).empty();
 	}
